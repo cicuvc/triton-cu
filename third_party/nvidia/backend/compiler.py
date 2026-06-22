@@ -618,9 +618,9 @@ class CUDABackend(BaseBackend):
         arg_list = "void* _out" + ("".join(f", void* _arg{j}" for j in range(num_inputs)) if num_inputs else "")
         extra = ", unsigned int, unsigned char*, unsigned char*"
         lines.append(f'extern "C" __device__ void {mangled_name}({arg_list}{extra}) {{')
-        # Cast inputs back to typed references
+        # Cast inputs back to typed references, each operand with its own type
         for j in range(num_inputs):
-            lines.append(f"    const TT0& arg{j} = *static_cast<const TT0*>(_arg{j});")
+            lines.append(f"    const TT{j}& arg{j} = *static_cast<const TT{j}*>(_arg{j});")
         call_args = ", ".join(f"arg{j}" for j in range(num_inputs))
         lines.append(f"    *static_cast<TT0*>(_out) = {symbol}({call_args});")
         lines.append("}")

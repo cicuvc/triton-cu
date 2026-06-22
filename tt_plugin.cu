@@ -18,6 +18,9 @@ struct IntTuple{
     constexpr IntTuple<N> operator+(const IntTuple<N>& rhs) const {
         return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ return IntTuple<N>{ (Dims[IDX]^rhs.Dims[IDX])... }; })(std::make_index_sequence<N>{});
     }
+    constexpr IntTuple<N> sliceOut(uint32_t dim) const{
+        return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ return IntTuple<N>{ (IDX == dim ? 0 : Dims[IDX])... }; })(std::make_index_sequence<N>{});
+    }
 };
 
 template<typename TShape, uint32_t N_WARPS = 4>
@@ -43,10 +46,18 @@ struct TensorLayout{
                 return ((((Dims[IDX].Dims[rank] >> bit) & 0x1) ? (1u << IDX) : 0) | ... | 0);
             })(std::make_index_sequence<N_BASES>{});
         }
+        constexpr BasisGroup<N_BASES> sliceOut(uint32_t dim) const {
+            return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ 
+                return  BasisGroup<N_BASES>{ Dims[IDX].sliceOut(dim)... };
+            })(std::make_index_sequence<N_BASES>{});
+        }
     };
 
     template<BasisGroup<N_REG_AXES> REGS, BasisGroup<5> LANES, BasisGroup<N_WARP_AXES> WARPS>
     struct Layout{
+        template<int SLICE_DIM>
+        using Sliced = Layout<REGS.sliceOut(SLICE_DIM), LANES.sliceOut(SLICE_DIM), WARPS.sliceOut(SLICE_DIM)>;
+
         static constexpr uint32_t NUM_WARPS = N_WARPS;
         static constexpr uint32_t REG_SIZE = 1u << N_REG_AXES;
         static constexpr auto GROUP_WAPRS = WARPS;
@@ -93,4 +104,9 @@ __device__ Tensor<T, Shape<TILE_WIDTH>, TLayout> intra_warp_add_sibling(const Te
         result.data[i ^ reg_mask] += remote_val;
     }
     return result;
+}
+
+template<typename T, uint32_t TILE_ROWS, uint32_t TILE_COLS, typename TMatLayout>
+__device__ Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout> add_bias(const Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout>& mat, const Tensor<T, Shape<1, TILE_COLS>, typename TMatLayout::template Sliced<0>>& bias){
+    return mat; // not implemented yet
 }

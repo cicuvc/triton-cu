@@ -234,25 +234,22 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             layout = AutoLayout()
         return self.splat(scalar, shape, layout)
 
-    def call_extern(self, src_path, func, args, result_layouts=None):
+    def call_extern(self, src_path, func, args, result_layouts, assert_no_conv=False):
         _check(isinstance(src_path, str), lambda: f"expected 'src_path' to be a str but got {type(src_path)!r}")
         _check(isinstance(func, str), lambda: f"expected 'func' to be a str but got {type(func)!r}")
         for a in args:
             _check(isinstance(a, ttgl.tensor),
                    lambda: f"all arguments must be tensors but got {type(a)!r}")
-        if result_layouts is not None:
-            _check(isinstance(result_layouts, list),
-                   lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
+        _check(isinstance(result_layouts, list),
+               lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
 
-        # Default result type: same as first input
         first_input = args[0]
+        # The extern_call op emits its result with the first input's layout.
+        # If the user-specified result_layout differs, insert convert_layout.
         result_types = []
-        if result_layouts is None:
-            result_types = [first_input.type]
-        else:
-            for lo in result_layouts:
-                result_types.append(
-                    ttgl.distributed_type(first_input.dtype, first_input.shape, lo))
+        for lo in result_layouts:
+            result_types.append(
+                ttgl.distributed_type(first_input.dtype, first_input.shape, lo))
 
         result_ir_types = [rt.to_ir(self.builder) for rt in result_types]
         arg_handles = [a.handle for a in args]
@@ -260,9 +257,14 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             str(src_path), func, arg_handles, result_ir_types)
 
         results = [ttgl.tensor(h, rt) for h, rt in zip(result_handles, result_types)]
-        if result_layouts is not None:
-            results = [self.convert_layout(r, lo)
-                       for r, lo in zip(results, result_layouts)]
+        for i, (r, lo) in enumerate(zip(results, result_layouts)):
+            if lo == first_input.type.layout:
+                continue  # same layout, no conversion needed
+            if assert_no_conv:
+                raise ValueError(
+                    f"extern_call result[{i}] layout differs from input layout, "
+                    f"but assert_no_conv=True was specified")
+            results[i] = self.convert_layout(r, lo)
         return results[0] if len(results) == 1 else tuple(results)
 
     def convert_layout(self, value, layout, assert_trivial=False):
