@@ -1,10 +1,26 @@
 # Working on Triton
 
 ## Build
-- Initialize: `pip install -r python/requirements.txt && pip install -e .` (or `make dev-install`)
-- For C++/compiler changes only, build with `make` (runs `ninja -C $BUILD_DIR`). Do NOT run `make` if you only changed Python code or `python/triton_kernels`.
-- Build dir: `BUILD_DIR := $(shell PYTHONPATH="./python" python3 -c 'from build_helpers import get_cmake_dir; print(get_cmake_dir())')`. Pattern: `build/cmake.<plat>-<py_impl>-<py_ver>/`. Override with `TRITON_BUILD_DIR`.
-- Build a single target: `ninja -C $BUILD_DIR triton-opt` (or `make triton-opt`).
+- **DO NOT run `pip install -e .`** — it overwrites the venv's standard triton. Use `PYTHONPATH` for local dev.
+- **Use our self-compiled LLVM** at `/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install` via `-DLLVM_SYSPATH=...`. Do NOT use Triton's default precompiled LLVM (symbol mismatch).
+- **Use clang as compiler** (`CC=clang CXX=clang++`). Our LLVM was built with clang; gcc is too slow / memory-hungry for this project.
+- C++/compiler changes: build with ninja directly. CMake invocation:
+  ```
+  export LLVM_SYSPATH=/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install
+  cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DTRITON_BUILD_PYTHON_MODULE=ON -DTRITON_BUILD_PROTON=OFF -DTRITON_BUILD_UT=OFF \
+    -DTRITON_CODEGEN_BACKENDS="nvidia;amd" \
+    -DLLVM_SYSPATH=${LLVM_SYSPATH} \
+    -DTRITON_CACHE_PATH=${TRITON_CACHE_PATH} \
+    -DTRITON_WHEEL_DIR=/tmp/triton_wheel \
+    -B build .
+  ninja -C build triton
+  ```
+- Build output: `build/libtriton.so`. Copy to `python/triton/_C/libtriton.so` for local dev.
+- Run with `PYTHONPATH` set to local source tree so our modified Python files take priority over the venv install:
+  ```
+  PYTHONPATH="$(pwd)/python:$(pwd)/third_party/nvidia:$(pwd)/third_party/amd" python3 ...
+  ```
 
 ## Testing
 - `make test-lit` — lit tests (no GPU needed, from build dir).

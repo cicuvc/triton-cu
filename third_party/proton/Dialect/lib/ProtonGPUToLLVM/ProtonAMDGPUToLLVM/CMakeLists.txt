@@ -11,5 +11,4 @@ add_triton_library(ProtonAMDGPUToLLVM
 
     LINK_LIBS PUBLIC
     ProtonGPUToLLVM
-    TritonAMDGPUToLLVM
 )

@@ -453,11 +453,19 @@ class CUDABackend(BaseBackend):
             if paths:
                 llvm.link_extern_libs(llvm_mod, paths)
 
-        # Link extern_call functions from compiled .bc into the LLVM module
+        # Compile and link extern_call CUDA sources in-process,
+        # sharing the same LLVMContext for type identity.
         if has_extern_calls:
-            bc_paths = metadata.get("extern_call_bc_paths", [])
-            for bc_path in bc_paths:
-                llvm.link_extern_libs(llvm_mod, [bc_path])
+            compilation_jobs = metadata.get("extern_call_jobs", [])
+            for job in compilation_jobs:
+                success, cu_mod, error = llvm.compile_cuda_to_module(
+                    context, job["source"], job["filename"], job["args"])
+                if not success:
+                    raise RuntimeError(
+                        f"CUDA compilation failed: {error}\n"
+                        f"Source:\n{job['source']}")
+                if cu_mod:
+                    llvm.link_cuda_module(llvm_mod, cu_mod)
             # Mark cloned functions alwaysinline so O3 (and the NVPTX
             # backend's own AlwaysInlinerPass) inline them fully.
             for fn in llvm_mod.get_functions():
@@ -497,15 +505,14 @@ class CUDABackend(BaseBackend):
         return ret
 
     def _process_extern_calls(self, mod, metadata, capability):
-        """Compile extern .cu files to LLVM bitcode, strip module flags."""
+        """Extract extern_call specs from MLIR module. Compilation deferred
+        to make_llir (after LLVMContext is created for sharing)."""
         import json as _json
 
         json_str = mod.get_str_attr("ttg.extern_call_specs")
         if json_str is None:
             return False
 
-        import tempfile
-        import subprocess
         import os
 
         install_prefix = os.path.join(os.path.dirname(__file__), "..", "..", "..",
@@ -513,14 +520,11 @@ class CUDABackend(BaseBackend):
         if not os.path.exists(install_prefix):
             install_prefix = os.path.join(os.path.dirname(__file__), "..")
 
-        clang_bin = os.path.join(install_prefix, "bin", "clang")
-        opt_bin = os.path.join(install_prefix, "bin", "opt")
         resource_dir = os.path.join(install_prefix, "lib", "clang", "23")
         cuda_inc = os.path.join(os.path.dirname(__file__), "include")
-
         sm = f"sm_{capability // 10}{capability % 10}"
         specs = _json.loads(json_str)
-        bc_paths = []
+        compilation_jobs = []
 
         for mangled_name, spec in specs.items():
             libpath = spec["spec"]["libpath"]
@@ -529,15 +533,8 @@ class CUDABackend(BaseBackend):
 
             generated_cu = self._generate_cu_wrapper(mangled_name, libpath, symbol, inputs)
 
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.cu', delete=False, dir="/tmp"
-            ) as f:
-                f.write(generated_cu)
-                cu_path = f.name
-
-            bc_path = cu_path + ".bc"
-            subprocess.run([
-                clang_bin,
+            # Build clang driver args (used for in-process or subprocess fallback)
+            clang_args = [
                 "-x", "cuda",
                 "-std=c++20",
                 "-O2",
@@ -548,19 +545,14 @@ class CUDABackend(BaseBackend):
                 "-D__global__=__attribute__((global))",
                 "-I", cuda_inc,
                 "-resource-dir", resource_dir,
-                "-emit-llvm", "-c", cu_path, "-o", bc_path,
-            ], check=True, capture_output=True)
+            ]
+            compilation_jobs.append({
+                "source": generated_cu,
+                "filename": "wrapper.cu",
+                "args": clang_args,
+            })
 
-            # Strip module flags that conflict with Triton's module
-            stripped_path = cu_path + ".stripped.bc"
-            subprocess.run([
-                opt_bin,
-                "-strip-debug", "-strip-named-metadata",
-                bc_path, "-o", stripped_path,
-            ], check=True, capture_output=True)
-            bc_paths.append(stripped_path)
-
-        metadata["extern_call_bc_paths"] = bc_paths
+        metadata["extern_call_jobs"] = compilation_jobs
         return True
 
     def _generate_cu_wrapper(self, mangled_name, libpath, symbol, inputs):

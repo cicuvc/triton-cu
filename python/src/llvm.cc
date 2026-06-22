@@ -43,6 +43,12 @@
 
 namespace py = pybind11;
 
+// In clang_compiler.cc
+std::pair<std::unique_ptr<llvm::Module>, std::string>
+tritonCompileCudaToModule(llvm::LLVMContext &ctx, const std::string &source,
+                          const std::string &filename,
+                          const std::vector<std::string> &args);
+
 namespace llvm {
 struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
@@ -973,6 +979,54 @@ void init_triton_llvm(py::module &&m) {
           return !broken;
         },
         py::arg("mod"));
+
+  // Link a CUDA device module directly (no file I/O).
+  // The src module must share the same LLVMContext as dst.
+  m.def("link_cuda_module",
+        [](llvm::Module *dstMod,
+           std::unique_ptr<llvm::Module> srcMod) -> bool {
+          if (!srcMod)
+            throw std::invalid_argument("Source module is null");
+          srcMod->setTargetTriple(
+              llvm::Triple(dstMod->getTargetTriple()));
+          srcMod->setDataLayout(dstMod->getDataLayout());
+
+          std::unordered_set<std::string> externalFns;
+          for (llvm::Function &fn : srcMod->functions())
+            if (!fn.isDeclaration())
+              externalFns.insert(fn.getName().str());
+
+          llvm::Linker linker(*dstMod);
+          if (linker.linkInModule(std::move(srcMod),
+                                  llvm::Linker::Flags::LinkOnlyNeeded))
+            throw std::invalid_argument("Failed to link CUDA module");
+
+          for (llvm::Function &fn : dstMod->functions())
+            if (externalFns.count(fn.getName().str()))
+              fn.setLinkage(llvm::GlobalValue::InternalLinkage);
+          return true;
+        },
+        py::arg("dst_mod"), py::arg("src_mod"));
+
+  // In-process CUDA compilation: source -> LLVM Module sharing ctx.
+  // Returns (success: bool, module: Module|None, error: str)
+  m.def("compile_cuda_to_module",
+        [](llvm::LLVMContext &ctx, const std::string &source,
+           const std::string &filename,
+           const std::vector<std::string> &args) -> py::tuple {
+            std::exit(-1);
+          auto [mod, error] =
+              tritonCompileCudaToModule(ctx, source, filename, args);
+          if (mod)
+            return py::make_tuple(true,
+                                  py::cast(std::move(mod),
+                                           py::return_value_policy::take_ownership),
+                                  py::str(""));
+          else
+            return py::make_tuple(false, py::none(), py::str(error));
+        },
+        py::arg("ctx"), py::arg("source"), py::arg("filename"),
+        py::arg("args"));
 }
 
 static void triton_stacktrace_signal_handler(void *) {

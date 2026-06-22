@@ -4,6 +4,11 @@ import torch
 import triton.experimental.gluon as gluon
 import triton.experimental.gluon.language as gl
 
+import triton._C.libtriton as lt
+print(lt)
+
+exit(0)
+
 @gluon.jit
 def vectorized_add(x_ptr, y_ptr, out_ptr):
     # works with num_warps = 1 for test
@@ -40,7 +45,5 @@ if __name__ == "__main__":
     k = sib_shuffle[(1,)](x, out, num_warps = 1)
 
     torch.cuda.synchronize()
-    print(x + x.reshape(-1, 2).flip((-1,)).flatten())
-    print(out)
-
-    Path('./x.cubin').write_bytes(k.asm['cubin'])
+    ref = (x + x.reshape(-1, 2).flip((-1,)).flatten())
+    torch.testing.assert_close(out, ref)

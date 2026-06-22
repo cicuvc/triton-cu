@@ -479,3 +479,225 @@ Module attribute `ttg.extern_call_specs` 的 JSON 格式:
 4. **Triton (非Gluon) 路径**: 需要定义 `tt.extern_call` → `ttg.extern_call` 的 conversion pattern in `TritonToTritonGPUPass.cpp`。
 
 5. **AMD 支持**: 当前只支持 NVGPU (32 threads/warp, 5-bit lane)。AMD 需要不同 `tt_plugin.cu` 的变体。
+
+
+---
+
+# Phase 2: In-Process CUDA Compilation
+
+## 目标
+
+将 subprocess clang 编译替换为 in-process `clang::EmitLLVMOnlyAction`，编译出的 LLVM Module 与 Triton 的 module **共享同一个 LLVMContext**，彻底消除 struct type ID 不匹配。
+
+## 先决条件
+
+- 用自编译 LLVM 构建 Triton（版本 `62b7cf96` 一致，包含 clang C++ 库）
+- LLVM 构建类型用 `MinSizeRel` 以控制 clang 库体积
+
+## 架构
+
+```
+当前:
+  clang binary (subprocess) → .bc (temp file) → parseIRFile() → link_extern_libs()
+  独立 LLVMContext      独立 LLVMContext       重新parse        Linker reconcile types
+
+改为:
+  EmitLLVMOnlyAction(&tritonContext) → executeAction() → takeModule()
+        ↑ 同一个 LLVMContext                                 ↓
+  通过 CompilerInstance 编译 .cu                    unique_ptr<Module> 已在 Triton context 中
+                                                              ↓
+                                               llvm::Linker::linkInModule(tritonMod, cuMod)
+                                                              ↓
+                                                   types 天然一致, 不需要 reconcile
+```
+
+## 核心 API
+
+### Clang 侧: EmitLLVMOnlyAction
+
+```cpp
+// include/clang/CodeGen/CodeGenAction.h
+class EmitLLVMOnlyAction : public CodeGenAction {
+public:
+  EmitLLVMOnlyAction(llvm::LLVMContext *_VMContext = nullptr);
+  // 继承: std::unique_ptr<llvm::Module> takeModule();
+};
+
+// 用法:
+auto action = std::make_unique<clang::EmitLLVMOnlyAction>(&tritonLLVMContext);
+clang->ExecuteAction(*action);
+auto cuMod = action->takeModule();  // Module 在 tritonLLVMContext 中
+```
+
+### CompilerInstance 设置
+
+```cpp
+// 构建 cc1 参数
+std::vector<const char *> args = {
+    "clang", "-cc1",
+    "-x", "cuda",
+    "--cuda-device-only",
+    "-target", "nvptx64-nvidia-cuda",
+    "--offload-arch=sm_<arch>",
+    "-nocudainc", "-nocudalib",
+    "-O2",
+    "-std=c++20",
+    "-resource-dir", "<install>/lib/clang/23",
+    "-I", "<cuda_include>",
+    "-D", "__device__=__attribute__((device))",
+    "-D", "__global__=__attribute__((global))",
+    "wrapper.cu",
+};
+
+// CompilerInvocation::CreateFromArgs
+auto invocation = std::make_shared<CompilerInvocation>();
+CompilerInvocation::CreateFromArgs(*invocation, args, *diags);
+
+// CompilerInstance
+auto clang = std::make_unique<CompilerInstance>(invocation, pchOps);
+
+// In-Memory VFS: 注入 wrapper 源码, overlay 真实文件系统 (include tt_plugin.cu)
+auto overlayFS = makeIntrusiveRefCnt<vfs::OverlayFileSystem>(vfs::getRealFileSystem());
+auto inMemFS = makeIntrusiveRefCnt<vfs::InMemoryFileSystem>();
+inMemFS->addFile("wrapper.cu", 0, MemoryBuffer::getMemBuffer(wrapperSource));
+overlayFS->pushOverlay(inMemFS);
+clang->createVirtualFileSystem(overlayFS, &diagPrinter);
+```
+
+### LLVM 侧: linkInModule 替代 link_extern_libs
+
+```cpp
+// 现有 link_extern_libs 从文件 parse 再 link。
+// 改为直接接受 llvm::Module*:
+void linkCudaModule(llvm::Module *dstMod, std::unique_ptr<llvm::Module> srcMod) {
+    srcMod->setTargetTriple(dstMod->getTargetTriple());
+    srcMod->setDataLayout(dstMod->getDataLayout());
+    llvm::Linker linker(*dstMod);
+    if (linker.linkInModule(std::move(srcMod), llvm::Linker::Flags::LinkOnlyNeeded))
+        throw std::runtime_error("Failed to link CUDA module");
+    // Set linked-in functions to InternalLinkage
+    for (auto &fn : dstMod->functions())
+        if (!fn.isDeclaration() && fn.getLinkage() == GlobalValue::ExternalLinkage)
+            fn.setLinkage(GlobalValue::InternalLinkage);
+}
+```
+
+## 体积估算
+
+clang 核心静态库（MinSizeRel 预计可压缩到 ~300 MiB 级别）：
+
+| 库 | RelWithDebInfo | MinSizeRel 预估 |
+|---|---------------|----------------|
+| `libclangSema.a` | 312 MiB | ~100 MiB |
+| `libclangCodeGen.a` | 204 MiB | ~70 MiB |
+| `libclangAST.a` | 210 MiB | ~60 MiB |
+| `libclangDriver.a` | 81 MiB | ~25 MiB |
+| `libclangFrontend.a` | 50 MiB | ~15 MiB |
+| `libclangSerialization.a` | 50 MiB | ~15 MiB |
+| `libclangBasic.a` | 42 MiB | ~12 MiB |
+| `libclangParse.a` | 31 MiB | ~10 MiB |
+| `libclangLex.a` | 23 MiB | ~8 MiB |
+| **合计** | **~1.0 GB** | **~300 MiB** |
+
+外加 ~32 个额外 LLVM 库（`LLVMAnalysis`, `LLVMBitReader`, `LLVMipo`, `LLVMInstCombine` 等）。
+
+### 方案 A: 直接链接（推荐先走这个）
+
+- `libtriton.so` 直接链接 clang 静态库
+- 简单直接，不需要额外的 .so 加载逻辑
+- MinSizeRel 后 `libtriton.so` 预估 ~300-500 MiB
+
+### 方案 B: 独立 libtriton_clang.so（备选）
+
+- 编译一个小的 `libtriton_clang.so` 封装 clang 编译逻辑
+- `libtriton.so` 通过 `dlopen` + 函数指针调用
+- 不加载 clang 功能时不加载体量
+
+## 实现步骤
+
+### Step 0: 重新构建 LLVM (MinSizeRel)
+
+```bash
+cd llvm-project
+cmake -G Ninja \
+  -DCMAKE_BUILD_TYPE=MinSizeRel \
+  -DCMAKE_C_COMPILER=/usr/bin/clang \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+  -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld;clang" \
+  -DLLVM_TARGETS_TO_BUILD="Native;NVPTX" \
+  -DLLVM_PARALLEL_LINK_JOBS=1 \
+  -DCMAKE_INSTALL_PREFIX=<install_path> \
+  -B build_min_size llvm
+ninja -C build_min_size install
+```
+
+### Step 1: 重新构建 Triton
+
+```bash
+cmake -DLLVM_SYSPATH=<min-size-install> ...
+ninja
+```
+
+### Step 2: 添加 clang 库到 CMakeLists.txt
+
+在 `TRITON_LIBRARIES` 中添加 clang C++ 库：
+```
+clangCodeGen clangFrontend clangFrontendTool clangDriver
+clangParse clangSema clangBasic clangLex clangAST clangSerialization
+```
+
+以及额外 LLVM 库（clangCodeGen 的 LINK_COMPONENTS 减去已链接的）：
+```
+LLVMAnalysis LLVMBitReader LLVMBitWriter LLVMCore LLVMipo
+LLVMInstCombine LLVMLinker LLVMMC LLVMObject LLVMScalarOpts
+LLVMSupport LLVMTarget LLVMTargetParser LLVMTransformUtils
+LLVMExtensions LLVMIRReader LLVMProfileData LLVMLTO
+LLVMInstrumentation LLVMCoverage LLVMDemangle
+LLVMAggressiveInstCombine LLVMFrontendOpenMP
+LLVMFrontendOffloading LLVMFrontendDriver
+LLVMFrontendHLSL LLVMCodeGenTypes LLVMObjCARCOpts
+```
+
+### Step 3: 添加 Python 绑定
+
+在 `llvm.cc` 中添加：
+```cpp
+// in-process CUDA → LLVM Module compilation
+m.def("compile_cuda_to_module",
+    [](const std::string &source, const std::string &filename,
+       const std::vector<std::string> &clangArgs,
+       llvm::LLVMContext &ctx) -> py::object {
+        // set up diagnostic consumer to capture errors
+        // create CompilerInvocation from args
+        // create CompilerInstance with in-memory VFS
+        // execute EmitLLVMOnlyAction(&ctx)
+        // return (true, module) or (false, error_message)
+    });
+
+// link a Module* directly (no file I/O)
+m.def("link_cuda_module", &linkCudaModule, ...);
+```
+
+### Step 4: 修改 _process_extern_calls
+
+```python
+# 替换:
+# subprocess.run([clang_bin, ...])  → .bc file
+# subprocess.run([opt_bin, ...])    → stripped .bc
+# llvm.link_extern_libs(llvm_mod, [bc_path])
+
+# 改为:
+success, cu_mod, error = llvm.compile_cuda_to_module(
+    wrapper_source, "wrapper.cu", clang_args, context)
+if not success:
+    raise RuntimeError(f"CUDA compilation failed: {error}")
+llvm.link_cuda_module(llvm_mod, cu_mod)
+```
+
+### Step 5: 去掉 opt 步骤
+
+in-process 编译直接产出 Module，不需要 `opt -strip-debug -strip-named-metadata`。删除相关代码。
+
+### Step 6: Fallback
+
+保留 subprocess clang binary 路线作为 fallback（`TRITON_USE_CLANG_BINARY=1` 或 clang 不可用时自动回退）。
