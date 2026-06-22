@@ -1,13 +1,9 @@
 from pathlib import Path
-
+import sys
+sys.path.append('python')
 import torch
 import triton.experimental.gluon as gluon
 import triton.experimental.gluon.language as gl
-
-import triton._C.libtriton as lt
-print(lt)
-
-exit(0)
 
 @gluon.jit
 def vectorized_add(x_ptr, y_ptr, out_ptr):

@@ -16,8 +16,6 @@ namespace triton::proton::gpu {
 #define GEN_PASS_DECL
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h.inc"
 
-std::unique_ptr<OperationPass<ModuleOp>> createAddSchedBarriersPass();
-
 #define GEN_PASS_REGISTRATION
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h.inc"
 

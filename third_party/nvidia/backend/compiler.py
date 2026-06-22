@@ -543,8 +543,9 @@ class CUDABackend(BaseBackend):
                 "-nocudalib",
                 "-D__device__=__attribute__((device))",
                 "-D__global__=__attribute__((global))",
+                "-D__x86_64__",
                 "-I", cuda_inc,
-                "-resource-dir", resource_dir,
+                "-resource-dir", resource_dir
             ]
             compilation_jobs.append({
                 "source": generated_cu,

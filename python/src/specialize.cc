@@ -43,7 +43,6 @@ static PyObject *jit_callable_cls = nullptr;
 static PyObject *tensor_descriptor_cls = nullptr;
 static PyObject *nvidia_tensor_descriptor_cls = nullptr;
 static PyObject *nvidia_tensor_descriptor_im2col_cls = nullptr;
-static PyObject *amd_tensor_descriptor_cls = nullptr;
 static PyObject *canonicalize_dtype_fn = nullptr;
 static PyObject *canonicalize_ptr_dtype_fn = nullptr;
 static PyObject *torch_tensor_cls = nullptr;
@@ -133,8 +132,6 @@ bool init_globals() noexcept try {
       "triton.experimental.gluon.nvidia.hopper", "TensorDescriptor");
   nvidia_tensor_descriptor_im2col_cls = import_from(
       "triton.experimental.gluon.nvidia.hopper", "TensorDescriptorIm2Col");
-  amd_tensor_descriptor_cls =
-      import_from("triton.experimental.gluon.amd.gfx1250", "TensorDescriptor");
 
   auto m_canonicalize = py::module_::import("triton._utils");
   canonicalize_dtype_fn = import_from("triton._utils", "canonicalize_dtype");
@@ -491,10 +488,6 @@ void init_type_handler_cache() {
     type_handler_cache[(PyTypeObject *)nvidia_tensor_descriptor_im2col_cls] =
         handle_gluon_tensor_descriptor;
   }
-  if (amd_tensor_descriptor_cls && PyType_Check(amd_tensor_descriptor_cls)) {
-    type_handler_cache[(PyTypeObject *)amd_tensor_descriptor_cls] =
-        handle_gluon_tensor_descriptor;
-  }
   // constexpr
   if (constexpr_cls && PyType_Check(constexpr_cls)) {
     type_handler_cache[(PyTypeObject *)constexpr_cls] = handle_constexpr_type;
@@ -540,11 +533,6 @@ std::pair<py::object, py::object> specialize_arg(PyObject *backend,
   }
 
   if (PyObject_IsInstance(arg, nvidia_tensor_descriptor_cls)) {
-    return handle_gluon_tensor_descriptor(backend, arg, is_const,
-                                          specialize_value, align);
-  }
-
-  if (PyObject_IsInstance(arg, amd_tensor_descriptor_cls)) {
     return handle_gluon_tensor_descriptor(backend, arg, is_const,
                                           specialize_value, align);
   }

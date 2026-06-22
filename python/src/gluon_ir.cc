@@ -135,16 +135,11 @@ struct GluonLayouts {
   py::handle NVMMASharedLayout;
   py::handle SwizzledSharedLayout;
   py::handle SharedLinearLayout;
-  py::handle AMDMFMALayout;
-  py::handle AMDWMMALayout;
   py::handle PaddedSharedLayout;
-  py::handle PartitionedSharedLayout;
 
   GluonLayouts() {
     auto layouts =
         py::module::import("triton.experimental.gluon.language._layouts");
-    auto amdLayouts =
-        py::module::import("triton.experimental.gluon.language.amd._layouts");
     auto blackwellLayouts = py::module::import(
         "triton.experimental.gluon.language.nvidia.blackwell");
     AutoLayout = py::object(layouts.attr("AutoLayout")).release();
@@ -165,14 +160,8 @@ struct GluonLayouts {
         py::object(layouts.attr("SwizzledSharedLayout")).release();
     SharedLinearLayout =
         py::object(layouts.attr("SharedLinearLayout")).release();
-    AMDMFMALayout = py::object(amdLayouts.attr("AMDMFMALayout")).release();
-    AMDWMMALayout = py::object(amdLayouts.attr("AMDWMMALayout")).release();
     PaddedSharedLayout =
         py::object(layouts.attr("PaddedSharedLayout")).release();
-    auto gfx1250Layouts = py::module::import(
-        "triton.experimental.gluon.language.amd.gfx1250._layouts");
-    PartitionedSharedLayout =
-        py::object(gfx1250Layouts.attr("PartitionedSharedLayout")).release();
 
     auto core = py::module::import("triton.language.core");
   }
@@ -255,23 +244,6 @@ py::object layoutToGluon(Attribute layout) {
     return layouts.AutoLayout();
   } else if (auto autoEnc = dyn_cast<gluon::CoalescedEncodingAttr>(layout)) {
     return layouts.CoalescedLayout();
-  } else if (auto amdMfma = dyn_cast<ttg::AMDMfmaEncodingAttr>(layout)) {
-    auto cgaBases = getCgaLayoutBases(amdMfma.getCGALayout());
-    return layouts.AMDMFMALayout(
-        amdMfma.getVersion(), toStdVector(amdMfma.getInstrShape()),
-        amdMfma.getIsTransposed(), toStdVector(amdMfma.getWarpsPerCTA()),
-        amdMfma.getElementBitWidth(), toStdVector(amdMfma.getTilesPerWarp()),
-        cgaBases);
-  } else if (auto amdWmma = dyn_cast<ttg::AMDWmmaEncodingAttr>(layout)) {
-    auto cgaBases = getCgaLayoutBases(amdWmma.getCGALayout());
-    const auto &ctaLayout = amdWmma.getCtaLayout();
-    auto ctx = layout.getContext();
-    auto kReg = mlir::StringAttr::get(ctx, "register");
-    auto kWarp = mlir::StringAttr::get(ctx, "warp");
-    return layouts.AMDWMMALayout(
-        amdWmma.getVersion(), amdWmma.getIsTransposed(),
-        ctaLayout.getBases().lookup(kWarp), ctaLayout.getBases().lookup(kReg),
-        toStdVector(amdWmma.getInstrShape()), cgaBases, amdWmma.getRank());
   } else if (auto paddedShared =
                  dyn_cast<ttg::PaddedSharedEncodingAttr>(layout)) {
     auto *ctx = paddedShared.getContext();
@@ -293,13 +265,6 @@ py::object layoutToGluon(Attribute layout) {
     auto shape = toStdVector(ll.getOutDimSizes());
     return layouts.PaddedSharedLayout(intervalPaddingPairs, ofstBases, blkBases,
                                       shape);
-  } else if (auto partitioned =
-                 dyn_cast<ttg::PartitionedSharedEncodingAttr>(layout)) {
-    py::object partitionLayout =
-        layoutToGluon(partitioned.getPartitionLayout());
-    return layouts.PartitionedSharedLayout(
-        partitioned.getNumPartitions(), partitioned.getNumGroups(),
-        partitioned.getPartitionDim(), partitionLayout);
   } else if (auto tmemScales =
                  dyn_cast<ttng::TensorMemoryScalesEncodingAttr>(layout)) {
     return layouts.TensorMemoryScalesLayout(
@@ -469,36 +434,6 @@ void init_gluon_ir(py::module &&m) {
              return self.getChecked<ttg::NvidiaMmaEncodingAttr>(
                  ctx, version[0], version[1], warpsPerCta, cgaLayout,
                  instrShape);
-           })
-      .def("get_amd_mfma_layout",
-           [](GluonOpBuilder &self, unsigned version,
-              std::vector<unsigned> &warpsPerCta,
-              std::vector<unsigned> &instrShape, bool transposed,
-              std::vector<std::vector<int32_t>> &cgaBases,
-              std::vector<unsigned> &tilesPerWarp,
-              unsigned elementBitWidth) -> Attribute {
-             auto ctx = self.getContext();
-             unsigned rank = warpsPerCta.size();
-             auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
-             return ttg::AMDMfmaEncodingAttr::get(
-                 ctx, version, warpsPerCta, instrShape, transposed, cgaLayout,
-                 tilesPerWarp, elementBitWidth);
-           })
-      .def("get_amd_wmma_layout",
-           [](GluonOpBuilder &self, unsigned version, bool transposed,
-              std::vector<std::vector<int32_t>> &warpBases,
-              std::vector<std::vector<int32_t>> &regBases,
-              std::vector<std::vector<int32_t>> &cgaBases,
-              std::vector<unsigned> &instrShape, unsigned rank) -> Attribute {
-             auto ctx = self.getContext();
-             auto kReg = mlir::StringAttr::get(ctx, "register");
-             auto kWarp = mlir::StringAttr::get(ctx, "warp");
-             auto ctaLayout =
-                 tt::LinearLayout({{kReg, regBases}, {kWarp, warpBases}},
-                                  tt::standardOutDimNames(ctx, rank));
-             auto cgaLayout = buildCgaLayoutAttr(ctx, cgaBases, rank);
-             return ttg::AMDWmmaEncodingAttr::get(
-                 ctx, version, ctaLayout, transposed, cgaLayout, instrShape);
            })
       .def("get_padded_shared_layout",
            [](GluonOpBuilder &self, std::vector<unsigned> &intervals,

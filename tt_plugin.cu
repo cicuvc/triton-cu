@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <utility>
+#include <algorithm>
 
 template<uint32_t... DIMS>
 struct Shape{
@@ -100,7 +101,7 @@ __device__ Tensor<T, Shape<TILE_WIDTH>, TLayout> intra_warp_add_sibling(const Te
     constexpr uint32_t thread_mask = lowbit(TLayout::GROUP_LANES.collectRow(0, 0));
     #pragma unroll TLayout::REG_SIZE
     for(uint32_t i = 0; i < TLayout::REG_SIZE; i++) {
-        T remote_val = __shfl_xor_sync(~0x0, input.data[i], thread_mask);
+        T remote_val = input.data[i]; //__shfl_xor_sync(~0x0, input.data[i], thread_mask);
         result.data[i ^ reg_mask] += remote_val;
     }
     return result;

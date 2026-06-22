@@ -69,7 +69,7 @@ PYEOF
 
 # Build
 rm -rf build
-CC=clang CXX=clang++ cmake -G Ninja \
+CC=clang CXX=clang++ cmake -G Ninja 
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DTRITON_BUILD_PYTHON_MODULE=ON \
