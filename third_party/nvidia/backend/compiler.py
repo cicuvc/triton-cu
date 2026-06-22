@@ -448,17 +448,25 @@ class CUDABackend(BaseBackend):
             nvidia.set_nvvm_reflect_ftz(llvm_mod)
 
         if options.extern_libs and nvidia.has_extern_deps(llvm_mod):
-            paths = [path for (name, path) in options.extern_libs]
-            llvm.link_extern_libs(llvm_mod, paths)
+            paths = [path for (name, path) in options.extern_libs
+                     if not name.startswith("__extern_call_src_")]
+            if paths:
+                llvm.link_extern_libs(llvm_mod, paths)
 
         # Link extern_call functions from compiled .bc into the LLVM module
         if has_extern_calls:
             bc_paths = metadata.get("extern_call_bc_paths", [])
             for bc_path in bc_paths:
                 llvm.link_extern_libs(llvm_mod, [bc_path])
+            # Mark cloned functions alwaysinline so O3 (and the NVPTX
+            # backend's own AlwaysInlinerPass) inline them fully.
             for fn in llvm_mod.get_functions():
-                if fn.name.startswith("__triton_ext_"):
-                    fn.set_external_linkage()
+                if fn.is_declaration():
+                    continue
+                name = fn.name
+                if name.startswith("__triton_ext_") or name.startswith("_Z"):
+                    fn.remove_fn_attr("noinline")
+                    fn.add_alwaysinline_attr()
 
             if not llvm.verify_module(llvm_mod):
                 raise RuntimeError("LLVM module verification failed after extern linking")
@@ -532,6 +540,7 @@ class CUDABackend(BaseBackend):
                 clang_bin,
                 "-x", "cuda",
                 "-std=c++20",
+                "-O2",
                 "--cuda-device-only",
                 "--cuda-gpu-arch=" + sm,
                 "-nocudalib",
@@ -634,25 +643,6 @@ class CUDABackend(BaseBackend):
             "u8": "unsigned char",
         }
         return mapping.get(dtype_name, "float")
-
-    @staticmethod
-    def _strip_module_flags(content):
-        """Remove module-level metadata that conflicts with Triton's module."""
-        import re
-        # Remove lines that start with !<num> = (metadata definitions)
-        # and lines that reference them (!llvm.module.flags, !llvm.ident)
-        content = re.sub(
-            r'^!llvm\.module\.flags\s*=\s*![{0-9,\s]+\}\s*\n', '', content,
-            flags=re.MULTILINE)
-        content = re.sub(
-            r'^!llvm\.ident\s*=\s*![{0-9,\s]+\}\s*\n', '', content,
-            flags=re.MULTILINE)
-        # Remove all metadata node definitions: !<n> = !{ !"...", ...}
-        # These are the nodes referenced by module.flags and llvm.ident
-        content = re.sub(
-            r'^!\d+\s*=\s*!\{.*\}\s*\n', '', content,
-            flags=re.MULTILINE)
-        return content
 
     def make_ptx(self, src, metadata, opt, capability):
         ptx_version = get_ptx_version_from_options(opt, self.target.arch)

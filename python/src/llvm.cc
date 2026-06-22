@@ -33,11 +33,6 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/ADCE.h"
-#include "llvm/Transforms/Scalar/EarlyCSE.h"
-#include "llvm/Transforms/Scalar/SROA.h"
-#include "llvm/Transforms/Scalar/SimplifyCFG.h"
-#include "llvm/Transforms/Utils/Cloning.h"
 #include <csignal>
 #include <cstdio>
 #include <memory>
@@ -526,74 +521,6 @@ using ret = py::return_value_policy;
 
 } // namespace
 
-static void
-cloneFunctionsFromModule(llvm::Module *dstMod, llvm::Module *srcMod) {
-  // Use a plain DenseMap instead of ValueToValueMapTy to avoid
-  // pulling in WeakTrackingVH which requires RTTI (triton uses -fno-rtti).
-  DenseMap<const Value *, Value *> VMap;
-
-  // Step 1: Pre-register ALL functions in VMap, creating declarations in dst
-  for (auto &srcFn : srcMod->functions()) {
-    Function *dstFn = dstMod->getFunction(srcFn.getName());
-    if (!dstFn) {
-      FunctionType *fTy = srcFn.getFunctionType();
-      dstFn = Function::Create(fTy, GlobalValue::ExternalLinkage,
-                               srcFn.getName(), dstMod);
-      if (srcFn.hasFnAttribute("nvvm.internal"))
-        dstFn->addFnAttr("nvvm.internal");
-      dstFn->copyAttributesFrom(&srcFn);
-    }
-    VMap[&srcFn] = dstFn;
-  }
-
-  // Step 2: Clone function definitions into dst module
-  for (auto &srcFn : srcMod->functions()) {
-    if (srcFn.isDeclaration())
-      continue;
-    auto *dstFn = cast<Function>(VMap[&srcFn]);
-
-    // Map arguments
-    for (auto [srcArg, dstArg] : llvm::zip(srcFn.args(), dstFn->args())) {
-      VMap[&srcArg] = &dstArg;
-      dstArg.setName(srcArg.getName());
-    }
-
-    SmallVector<ReturnInst *, 8> returns;
-    auto &vmapRef = reinterpret_cast<ValueToValueMapTy &>(VMap);
-    CloneFunctionInto(dstFn, &srcFn, vmapRef,
-                      CloneFunctionChangeType::DifferentModule, returns);
-    dstFn->setLinkage(GlobalValue::InternalLinkage);
-    dstFn->addFnAttr(Attribute::AlwaysInline);
-  }
-}
-
-static void
-runTargetedPasses(llvm::Module *mod) {
-  LoopAnalysisManager LAM;
-  FunctionAnalysisManager FAM;
-  CGSCCAnalysisManager CGAM;
-  ModuleAnalysisManager MAM;
-
-  PassBuilder pb;
-  pb.registerModuleAnalyses(MAM);
-  pb.registerCGSCCAnalyses(CGAM);
-  pb.registerFunctionAnalyses(FAM);
-  pb.registerLoopAnalyses(LAM);
-  pb.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-
-  ModulePassManager mpm;
-  mpm.addPass(AlwaysInlinerPass(/*InsertLifetime=*/false));
-
-  FunctionPassManager fpm;
-  fpm.addPass(SROAPass(SROAOptions::ModifyCFG));
-  fpm.addPass(InstCombinePass());
-  fpm.addPass(SimplifyCFGPass(
-      SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
-
-  mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
-  mpm.run(*mod, MAM);
-}
-
 void init_triton_llvm(py::module &&m) {
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
@@ -661,6 +588,10 @@ void init_triton_llvm(py::module &&m) {
               fn->addFnAttr(name, val);
           },
           py::arg("name"), py::arg("val") = "")
+      .def("add_alwaysinline_attr",
+           [](llvm::Function *fn) {
+             fn->addFnAttr(llvm::Attribute::AlwaysInline);
+           })
       .def("remove_fn_attr", [](llvm::Function *fn,
                                 std::string &name) { fn->removeFnAttr(name); })
       .def("add_fn_asan_attr",
@@ -1031,28 +962,7 @@ void init_triton_llvm(py::module &&m) {
     }
   });
 
-  // Clone all function definitions from src module into dst module
-  m.def("clone_functions_from_module", &cloneFunctionsFromModule,
-        py::arg("dst_mod"), py::arg("src_mod"));
-
-  // Parse LLVM bitcode into an existing LLVMContext
-  m.def("parse_ir_module",
-        [](const std::string &path, llvm::LLVMContext &ctx)
-            -> std::unique_ptr<llvm::Module> {
-          SMDiagnostic err;
-          auto mod = parseIRFile(path, err, ctx);
-          if (!mod) {
-            std::string msg = "Failed to parse IR file: " + path;
-            throw std::runtime_error(msg);
-          }
-          return mod;
-        },
-        py::arg("path"), py::arg("context"));
-
   // Run targeted optimization pipeline for GPU kernels
-  m.def("run_targeted_passes", &runTargetedPasses, py::arg("mod"));
-
-  // Verify an LLVM module, printing errors to stderr. Returns true if valid.
   m.def("verify_module",
         [](llvm::Module *mod) -> bool {
           std::string errors;

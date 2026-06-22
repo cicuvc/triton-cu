@@ -17,6 +17,33 @@ class GluonASTSource(ASTSource):
         self.language = Language.GLUON
         self.ext = "ttgir"
 
+    def parse_options(self):
+        import re
+        from pathlib import Path
+
+        # self.fn is the JITFunction instance; use .raw_src to get source.
+        # Scan for gl.call("file.cu") patterns and add .cu paths to
+        # extern_libs so file_hash() includes them in the cache key.
+        extern_hashes = {}
+        try:
+            if hasattr(self.fn, 'raw_src'):
+                source = ''.join(self.fn.raw_src)
+            else:
+                return {}
+            for m in re.finditer(r'gl\s*\.\s*call\s*\(\s*["\']([^"\']+\.cu)["\']', source):
+                cu_path = Path(m.group(1))
+                if not cu_path.is_absolute():
+                    cu_path = Path.cwd() / cu_path
+                cu_path = cu_path.resolve()
+                if cu_path.exists():
+                    extern_hashes[f"__extern_call_src_{cu_path.stem}"] = str(cu_path)
+        except Exception:
+            pass
+
+        if extern_hashes:
+            return {"extern_libs": extern_hashes}
+        return {}
+
     def make_ir(self, target, options, codegen_fns, module_map, context):
         from triton.compiler.compiler import make_backend
         from triton.compiler.code_generator import ast_to_ttir
