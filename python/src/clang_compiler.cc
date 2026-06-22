@@ -31,8 +31,6 @@ compileCudaToModule(const std::string &source, const std::string &filename,
                     llvm::LLVMContext &tritonCtx, std::string &error) {
   // Write source to a real temp file (VFS overlay has issues with the Driver).
   std::string tmpname = "/tmp/triton_clang_" + filename + ".XXXXXX.cu";
-  printf("%s\n", source.c_str());
-  std::exit(-1);
   std::vector<char> tmpbuf(tmpname.data(), tmpname.data() + tmpname.size() + 1);
   int fd = mkstemps(tmpbuf.data(), 3); // .cu = 3 chars
   if (fd < 0) {
@@ -68,7 +66,7 @@ compileCudaToModule(const std::string &source, const std::string &filename,
 
   // Use the driver to build the compilation
   clang::driver::Driver driver(
-      "clang", llvm::sys::getDefaultTargetTriple(),
+      "clang", "nvptx64-nvidia-cuda",
       *diags, "triton-clang");
   driver.setTitle("triton-clang");
 

@@ -1014,7 +1014,6 @@ void init_triton_llvm(py::module &&m) {
         [](llvm::LLVMContext &ctx, const std::string &source,
            const std::string &filename,
            const std::vector<std::string> &args) -> py::tuple {
-            std::exit(-1);
           auto [mod, error] =
               tritonCompileCudaToModule(ctx, source, filename, args);
           if (mod)
