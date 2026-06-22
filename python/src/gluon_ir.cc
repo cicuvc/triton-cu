@@ -683,10 +683,18 @@ void init_gluon_ir(py::module &&m) {
              ValueRange tokens;
              self.create<ttg::AsyncWaitOp>(tokens, num);
            })
-      .def("create_convert_layout",
-           [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
-             return self.create<ttg::ConvertLayoutOp>(resultTy, value);
-           })
+       .def("create_convert_layout",
+            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
+              return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+            })
+       .def("create_extern_call",
+            [](GluonOpBuilder &self, const std::string &libpath,
+               const std::string &symbol, std::vector<Value> &args,
+               std::vector<Type> &resultTypes) -> std::vector<Value> {
+              auto op = self.create<ttg::ExternCallOp>(
+                  resultTypes, args, symbol, libpath);
+              return {op->result_begin(), op->result_end()};
+            })
       .def("create_local_alloc",
            [](GluonOpBuilder &self, Type resultTy) -> Value {
              return self.create<ttg::LocalAllocOp>(resultTy);

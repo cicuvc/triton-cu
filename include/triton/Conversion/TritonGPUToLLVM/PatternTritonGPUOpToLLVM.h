@@ -73,9 +73,13 @@ void populateScanOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                   const TargetInfoBase &targetInfo,
                                   PatternBenefit benefit);
 void populateGatherOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                    RewritePatternSet &patterns,
-                                    const TargetInfoBase &targetInfo,
-                                    PatternBenefit benefit);
+                                     RewritePatternSet &patterns,
+                                     const TargetInfoBase &targetInfo,
+                                     PatternBenefit benefit);
+void populateExternCallOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                        RewritePatternSet &patterns,
+                                        const TargetInfoBase &targetInfo,
+                                        PatternBenefit benefit);
 
 void populateConvertLayoutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                            const TargetInfoBase &targetInfo,

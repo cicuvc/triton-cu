@@ -183,7 +183,9 @@ struct ConvertTritonGPUToLLVM
     mlir::triton::populatePrintOpToLLVMPattern(typeConverter, patterns,
                                                targetInfo, benefit);
     mlir::triton::populateControlFlowOpToLLVMPattern(typeConverter, patterns,
-                                                     targetInfo, benefit);
+                                                      targetInfo, benefit);
+    mlir::triton::populateExternCallOpToLLVMPatterns(typeConverter, patterns,
+                                                      targetInfo, benefit);
     mlir::triton::NVIDIA::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                                       benefit);
     mlir::triton::populateSPMDOpToLLVMPattern(typeConverter, patterns,

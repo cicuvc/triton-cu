@@ -769,3 +769,24 @@ def dot_fma(a, b, acc, _semantic=None):
 
     handle = _semantic.dot(a, b, acc, input_precision=None, max_num_imprecise_acc=None, out_dtype=acc.dtype).handle
     return tensor(handle, acc.type)
+
+
+@builtin
+def call(src_path, func, *args, result_layout=None, _semantic=None):
+    from pathlib import Path
+    src_path = _unwrap_if_constexpr(src_path)
+    func = _unwrap_if_constexpr(func)
+    result_layout = _unwrap_if_constexpr(result_layout)
+
+    src_path = Path(src_path)
+    if not src_path.is_absolute():
+        src_path = Path.cwd() / src_path
+    src_path = src_path.resolve()
+    if not src_path.exists():
+        raise FileNotFoundError(f"extern call source not found: {src_path}")
+
+    tensors = [_semantic.to_tensor(a) for a in args]
+    if result_layout is not None:
+        return _semantic.call_extern(str(src_path), func, tensors,
+                                     result_layouts=[result_layout])
+    return _semantic.call_extern(str(src_path), func, tensors)

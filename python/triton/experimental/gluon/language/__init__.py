@@ -4,6 +4,7 @@ from ._core import (
     base_type,
     block_type,
     broadcast,
+    call,
     cast,
     clamp,
     constexpr,

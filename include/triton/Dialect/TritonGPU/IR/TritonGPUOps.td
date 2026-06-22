@@ -783,6 +783,35 @@ def TTG_BarrierOp : TTG_Op<"barrier"> {
   }];
 }
 
+def TTG_ExternCallOp : TTG_Op<"extern_call", [
+    SameOperandsAndResultEncoding,
+    SameVariadicOperandSize
+  ]> {
+  let summary = "call an external CUDA C++ __device__ function";
+  let description = [{
+    Call a `__device__` function from an external CUDA C++ source file.
+    The function is JIT-compiled with layout information from the tensor
+    operands, and the resulting LLVM bitcode is linked into the kernel.
+
+    Example:
+    ```mlir
+    %result = ttg.extern_call(%lhs, %rhs) { symbol = "elementwise_add", libpath = "tt_plugin.cu" }
+              : (tensor<32xf32, #enc>, tensor<32xf32, #enc>) -> tensor<32xf32, #enc>
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<TT_Tensor>:$inputs,
+    StrAttr:$symbol,
+    StrAttr:$libpath
+  );
+  let results = (outs Variadic<TT_Tensor>:$results);
+
+  let assemblyFormat = [{
+    $inputs `:` functional-type($inputs, $results) attr-dict
+  }];
+}
+
 def TTG_WarpIdOp : TTG_Op<"warp_id", [Pure]> {
   let summary = "Return the GPU warp ID";
 
