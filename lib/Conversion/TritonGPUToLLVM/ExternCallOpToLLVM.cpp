@@ -1,150 +1,90 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "triton/Tools/LinearLayout.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/raw_ostream.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
-#ifdef alloca
-#undef alloca
-#endif
+#include "mlir/IR/BuiltinAttributes.h"
+#include "llvm/Support/JSON.h"
 
 using namespace mlir;
 using namespace mlir::triton;
 
 namespace {
 
-SmallVector<SmallVector<int32_t>>
-extractBases(const LinearLayout &ll, StringAttr inDim) {
-  auto bases = ll.getBases();
-  auto it = bases.find(inDim);
-  if (it == bases.end())
-    return {};
-  SmallVector<SmallVector<int32_t>> result;
-  for (auto &row : it->second)
-    result.push_back(SmallVector<int32_t>(row.begin(), row.end()));
-  return result;
+LogicalResult
+getMangledName(ModuleOp module, const std::string &symbol,
+               std::string &mangledName) {
+  auto attr = module->getAttrOfType<StringAttr>(
+      "ttg.extern_call_mangled_names");
+  if (!attr)
+    return failure();
+
+  auto json = llvm::json::parse(attr.getValue());
+  if (!json)
+    return failure();
+
+  auto *obj = json->getAsObject();
+  if (!obj)
+    return failure();
+
+  auto it = obj->find(symbol);
+  if (it == obj->end())
+    return failure();
+
+  auto val = it->second.getAsString();
+  if (!val)
+    return failure();
+
+  mangledName = val->str();
+  return success();
 }
 
-std::string
-computeLayoutHash(const std::string &symbol,
-                  ArrayRef<triton::gpu::ExternCallOp> ops,
-                  MLIRContext *ctx) {
-  std::string key = symbol;
-  StringAttr kRegister = StringAttr::get(ctx, "register");
-  StringAttr kLane     = StringAttr::get(ctx, "lane");
-  StringAttr kWarp     = StringAttr::get(ctx, "warp");
-
-  for (auto op : ops) {
-    for (auto operand : op.getInputs()) {
-      auto tensorTy = cast<RankedTensorType>(operand.getType());
-      auto encoding = tensorTy.getEncoding();
-      auto shape = tensorTy.getShape();
-      LinearLayout ll = triton::gpu::toLinearLayout(shape, encoding);
-      key += "|";
-      key += std::to_string(ll.getInDimSize(kRegister));
-      key += ",";
-      key += std::to_string(ll.getInDimSize(kLane));
-      key += ",";
-      key += std::to_string(ll.getInDimSize(kWarp));
-    }
-  }
-  return llvm::formatv("{0:x}", llvm::hash_value(key)).str();
+// Build a clang-compatible struct type: { [N x elemTy] }
+// Clang compiles C++ "T data[REG_SIZE]" into a struct containing an array.
+// MLIR's type converter produces flat { scalar x N }. This function
+// converts the flat type to the array-containing form.
+static LLVM::LLVMStructType
+buildClangStructType(MLIRContext *ctx, Type flatStructType) {
+  auto flatST = cast<LLVM::LLVMStructType>(flatStructType);
+  auto body = flatST.getBody();
+  if (body.empty())
+    return flatST;
+  Type elemTy = body[0];
+  unsigned N = body.size();
+  auto arrayTy = LLVM::LLVMArrayType::get(elemTy, N);
+  return LLVM::LLVMStructType::getLiteral(ctx, {arrayTy});
 }
 
-void
-storeLayoutMetadata(ModuleOp module,
-                    const std::string &mangledName,
-                    const std::string &libpath,
-                    const std::string &symbol,
-                    ArrayRef<triton::gpu::ExternCallOp> ops) {
-  auto *ctx = module.getContext();
-  StringAttr kRegister = StringAttr::get(ctx, "register");
-  StringAttr kLane     = StringAttr::get(ctx, "lane");
-  StringAttr kWarp     = StringAttr::get(ctx, "warp");
+// Convert the packed result type to clang-compatible form.
+// Single result:  { elemTy x N }          ->   { [N x elemTy] }
+// Multiple:       { {e0 x N0}, {e1 x N1} } ->  { {[N0 x e0]}, {[N1 x e1]} }
+static Type buildClangPackedReturnType(MLIRContext *ctx, Type packedResult) {
+  auto packedST = cast<LLVM::LLVMStructType>(packedResult);
+  SmallVector<Type> clangFields;
+  for (auto field : packedST.getBody())
+    clangFields.push_back(buildClangStructType(ctx, field));
+  return LLVM::LLVMStructType::getLiteral(ctx, clangFields);
+}
 
-  std::string jsonStr;
-  llvm::raw_string_ostream os(jsonStr);
+// After the call, convert a clang struct { [N x elemTy] }
+// back to MLIR's flat struct { elemTy x N }.
+static Value convertClangToFlat(Location loc,
+                                ConversionPatternRewriter &rewriter,
+                                Value clangResult, Type flatType) {
+  auto flatST = cast<LLVM::LLVMStructType>(flatType);
+  auto body = flatST.getBody();
+  unsigned N = body.size();
 
-  // Read existing JSON if any, or start a new dict
-  auto existing = module->getAttrOfType<StringAttr>("ttg.extern_call_specs");
-  if (existing) {
-    StringRef old = existing.getValue();
-    // Strip the trailing '}'
-    os << old.substr(0, old.size() - 1) << ",\n";
-  } else {
-    os << "{\n";
+  auto arrVal =
+      LLVM::ExtractValueOp::create(rewriter, loc, clangResult, {0});
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value flat = b.undef(flatType);
+  for (unsigned i = 0; i < N; ++i) {
+    auto elem =
+        LLVM::ExtractValueOp::create(rewriter, loc, arrVal, {i});
+    flat = LLVM::InsertValueOp::create(rewriter, loc, flat, elem, {i});
   }
-
-  // Append new entry
-  os << "  \"" << mangledName << "\": {\n";
-  os << "    \"spec\": {\"libpath\": \"" << libpath << "\", \"symbol\": \"" << symbol << "\"},\n";
-  os << "    \"inputs\": [\n";
-
-  bool firstInput = true;
-  for (auto op : ops) {
-    for (auto operand : op.getInputs()) {
-      if (!firstInput) os << ",\n";
-      firstInput = false;
-
-      auto tensorTy = cast<RankedTensorType>(operand.getType());
-      auto encoding = tensorTy.getEncoding();
-      auto shape = tensorTy.getShape();
-      LinearLayout ll = triton::gpu::toLinearLayout(shape, encoding);
-
-      auto regBases = extractBases(ll, kRegister);
-      auto laneBases = extractBases(ll, kLane);
-      auto warpBases = extractBases(ll, kWarp);
-
-      auto flatten = [](const SmallVector<SmallVector<int32_t>> &bases) {
-        std::string s;
-        llvm::raw_string_ostream ss(s);
-        ss << "[";
-        bool first = true;
-        for (auto &row : bases) {
-          for (auto v : row) {
-            if (!first) ss << ", ";
-            first = false;
-            ss << v;
-          }
-        }
-        ss << "]";
-        return s;
-      };
-
-      os << "      {\n";
-      os << "        \"shape\": [";
-      for (size_t i = 0; i < shape.size(); ++i) {
-        if (i > 0) os << ", ";
-        os << shape[i];
-      }
-      os << "],\n";
-      os << "        \"num_warps\": " << ll.getInDimSize(kWarp) << ",\n";
-      os << "        \"reg_bases\": " << flatten(regBases) << ",\n";
-      os << "        \"lane_bases\": " << flatten(laneBases) << ",\n";
-      os << "        \"warp_bases\": " << flatten(warpBases) << ",\n";
-
-      auto elemTy = tensorTy.getElementType();
-      const char *dtype = "f32";
-      if (elemTy.isF32()) dtype = "f32";
-      else if (elemTy.isF64()) dtype = "f64";
-      else if (elemTy.isF16()) dtype = "f16";
-      else if (elemTy.isBF16()) dtype = "bf16";
-      else if (elemTy.isInteger(32)) dtype = "i32";
-      else if (elemTy.isInteger(64)) dtype = "i64";
-      else if (elemTy.isInteger(8)) dtype = "i8";
-      os << "        \"dtype\": \"" << dtype << "\"\n";
-      os << "      }";
-    }
-  }
-
-  os << "\n    ]\n";
-  os << "  }\n";
-  os << "}";
-
-  module->setAttr("ttg.extern_call_specs",
-                  StringAttr::get(ctx, os.str()));
+  return flat;
 }
 
 struct ExternCallOpConversion
@@ -164,11 +104,11 @@ struct ExternCallOpConversion
 
     auto module = op->template getParentOfType<ModuleOp>();
 
-    std::string mangledName = "__triton_ext_" + op.getSymbol().str() + "_" +
-                               computeLayoutHash(op.getSymbol().str(), {op}, ctx);
-
-    storeLayoutMetadata(module, mangledName, op.getLibpath().str(),
-                        op.getSymbol().str(), {op});
+    std::string mangledName;
+    if (failed(getMangledName(module, op.getSymbol().str(), mangledName))) {
+      return op.emitError("extern_call symbol '")
+             << op.getSymbol() << "' not found in pre-compiled mangled names";
+    }
 
     auto caller = op->template getParentOfType<FunctionOpInterface>();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -177,83 +117,50 @@ struct ExternCallOpConversion
         loc, /*opOperands=*/op->getOperands(), adaptor.getOperands(),
         rewriter);
 
-    // Convert tensor struct operands to pointers: alloca + store.
-    // NVPTX passes large structs by value, but the CUDA wrapper
-    // compiled by clang accepts them as pointers. We allocate
-    // space on the stack to create a pointer for each struct.
     unsigned numTensorArgs = op.getInputs().size();
     for (unsigned i = 0; i < numTensorArgs; ++i) {
       auto structVal = promotedOperands[i];
       auto structTy = structVal.getType();
       auto ptrTy = LLVM::LLVMPointerType::get(ctx, 0);
       Value one = b.i32_val(1);
-      // Use LLVM::AllocaOp::create to create a stack allocation
-      // (avoiding name conflict with C library alloca() macro)
       auto *builder = &static_cast<OpBuilder &>(rewriter);
       Value stackPtr = LLVM::AllocaOp::create(
           *builder, loc, ptrTy, structTy, one, 0).getResult();
       b.store(structVal, stackPtr);
       promotedOperands[i] = stackPtr;
     }
-    if (!caller->hasAttr("allocation.offset") ||
-        !op->hasAttr("allocation.offset")) {
-      auto base = LLVM::getStackPointer(rewriter, caller);
-      auto i32Type = rewriter.getIntegerType(32);
-      promotedOperands.push_back(b.ptrtoint(i32Type, base));
-    } else {
-      auto base =
-          LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op);
-      auto i32Type = rewriter.getIntegerType(32);
-      promotedOperands.push_back(b.ptrtoint(i32Type, base));
-    }
 
-    auto opOffsetAttr = op->getAttrOfType<mlir::IntegerAttr>(
-        "ttg.global_scratch_memory_offset");
-    Value globalOffsetVal;
-    if (opOffsetAttr)
-      globalOffsetVal = b.i32_val(opOffsetAttr.getValue().getZExtValue());
-    Value gscratch = LLVM::getGlobalScratchPtr(
-        loc, rewriter, targetInfo, caller, globalOffsetVal);
-    promotedOperands.push_back(
-        b.addrspacecast(LLVM::LLVMPointerType::get(ctx, 0), gscratch));
+    SmallVector<Type> promotedTypes;
+    for (auto v : promotedOperands)
+      promotedTypes.push_back(v.getType());
 
-    auto profileOffsetAttr = op->getAttrOfType<mlir::IntegerAttr>(
-        "ttg.profile_scratch_memory_offset");
-    Value profileOffsetVal;
-    if (profileOffsetAttr)
-      profileOffsetVal = b.i32_val(profileOffsetAttr.getValue().getZExtValue());
-    Value pscratch = LLVM::getProfileScratchPtr(
-        loc, rewriter, targetInfo, caller, profileOffsetVal);
-    promotedOperands.push_back(
-        b.addrspacecast(LLVM::LLVMPointerType::get(ctx, 0), pscratch));
-
-    // Create an output buffer (alloca) and prepend its pointer
-    // to the argument list. The wrapper writes the result struct
-    // into this buffer, and we load from it after the call.
-    Value outPtr;
     unsigned numResults = op.getNumResults();
-    auto resultTypes = llvm::to_vector<4>(op.getResultTypes());
     Type packedResult = nullptr;
     if (numResults != 0) {
+      auto resultTypes = llvm::to_vector<4>(op.getResultTypes());
       packedResult =
           this->getTypeConverter()->packFunctionResults(resultTypes);
       if (!packedResult)
         return failure();
-      auto ptrTy = LLVM::LLVMPointerType::get(ctx, 0);
-      Value one = b.i32_val(1);
-      auto *builder = &static_cast<OpBuilder &>(rewriter);
-      outPtr = LLVM::AllocaOp::create(
-          *builder, loc, ptrTy, packedResult, one, 0).getResult();
-      promotedOperands.insert(promotedOperands.begin(), outPtr);
     }
 
-    // Function return type is always void — the wrapper writes
-    // the result into the output buffer passed as first argument.
-    SmallVector<Type> promotedTypes;
-    for (auto v : promotedOperands)
-      promotedTypes.push_back(v.getType());
-    auto funcType = LLVM::LLVMFunctionType::get(
-        LLVM::LLVMVoidType::get(ctx), promotedTypes);
+    // Build clang-compatible return type: { [N x elemTy] } instead
+    // of MLIR's flat { elemTy x N }.
+    // For single result, packedResult IS the flat tensor struct.
+    // For multiple results, packedResult wraps flattened tensor structs.
+    Type clangReturnType;
+    if (packedResult) {
+      if (numResults < 2) {
+        clangReturnType = buildClangStructType(ctx, packedResult);
+      } else {
+        clangReturnType = buildClangPackedReturnType(ctx, packedResult);
+      }
+    } else {
+      clangReturnType = LLVM::LLVMVoidType::get(ctx);
+    }
+
+    auto funcType =
+        LLVM::LLVMFunctionType::get(clangReturnType, promotedTypes);
 
     auto funcOp = appendOrGetExternFuncOp(rewriter, op, mangledName, funcType,
                                           "", op.getLibpath());
@@ -266,13 +173,24 @@ struct ExternCallOpConversion
 
     SmallVector<Value> results;
     if (numResults != 0) {
-      auto structResult = b.load(packedResult, outPtr);
+      Value clangResult = callOp.getResult();
       if (numResults < 2) {
-        results.push_back(structResult);
+        // Single tensor result: convert { [N x elemTy] } → { elemTy x N }
+        auto flat = convertClangToFlat(loc, rewriter, clangResult,
+                                       packedResult);
+        results.push_back(flat);
       } else {
-        for (unsigned i = 0; i < numResults; ++i) {
-          results.push_back(LLVM::ExtractValueOp::create(
-              rewriter, loc, structResult, i));
+        // Multiple tensor results: packedResult is
+        // { flat0, flat1, ... } and clangResult is
+        // { clang0, clang1, ... }. Extract each clang field
+        // and convert to flat.
+        auto packedST = cast<LLVM::LLVMStructType>(packedResult);
+        for (unsigned i = 0; i < packedST.getBody().size(); ++i) {
+          auto clangField = LLVM::ExtractValueOp::create(
+              rewriter, loc, clangResult, {i});
+          auto flat = convertClangToFlat(loc, rewriter, clangField,
+                                         packedST.getBody()[i]);
+          results.push_back(flat);
         }
       }
     }

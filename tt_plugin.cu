@@ -7,6 +7,8 @@ template<uint32_t... DIMS>
 struct Shape{
     static constexpr uint32_t RANK = sizeof...(DIMS);
     static constexpr uint32_t SIZE = (DIMS * ... * 1);
+
+    struct Dummy{};
 };
 
 template<uint32_t N>
@@ -24,16 +26,18 @@ struct IntTuple{
     }
 };
 
-template<typename TShape, uint32_t N_WARPS = 4>
+template<typename TShape, uint32_t N_WARPS>
 struct TensorLayout{
     static constexpr uint32_t RANK = TShape::RANK;
     static constexpr uint32_t SIZE = TShape::SIZE;
-    static constexpr uint32_t N_REG_AXES = __builtin_ffs(SIZE / N_WARPS) - 5 - 1;
+    static constexpr uint32_t N_LANE_AXES = 5;
+    static constexpr uint32_t N_REG_AXES = __builtin_ffs(SIZE / N_WARPS) - N_LANE_AXES - 1;
     static constexpr uint32_t N_WARP_AXES = __builtin_ffs(N_WARPS) - 1;
 
     template<uint32_t N_BASES>
     struct BasisGroup{
         IntTuple<RANK> Dims[N_BASES];
+        constexpr BasisGroup(){}
         constexpr BasisGroup(std::initializer_list<IntTuple<RANK>> basis){
             std::copy(basis.begin(), basis.end(), Dims);
         }
@@ -54,7 +58,10 @@ struct TensorLayout{
         }
     };
 
-    template<BasisGroup<N_REG_AXES> REGS, BasisGroup<5> LANES, BasisGroup<N_WARP_AXES> WARPS>
+    template<BasisGroup<N_REG_AXES> REGS>
+    struct LayoutX{};
+
+    template<BasisGroup<N_REG_AXES> REGS, BasisGroup<N_LANE_AXES> LANES, BasisGroup<N_WARP_AXES> WARPS>
     struct Layout{
         template<int SLICE_DIM>
         using Sliced = Layout<REGS.sliceOut(SLICE_DIM), LANES.sliceOut(SLICE_DIM), WARPS.sliceOut(SLICE_DIM)>;
@@ -111,3 +118,14 @@ template<typename T, uint32_t TILE_ROWS, uint32_t TILE_COLS, typename TMatLayout
 __device__ Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout> add_bias(const Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout>& mat, const Tensor<T, Shape<1, TILE_COLS>, typename TMatLayout::template Sliced<0>>& bias){
     return mat; // not implemented yet
 }
+
+
+using LA = TensorLayout<Shape<512>, 1>::Layout<{{1},{2},{4},{8}}, {{16},{32},{64},{128},{256}}, {}>;
+
+using TS = TensorLayout<Shape<512>, 1>;
+
+template<TS::BasisGroup<2> X>struct BB{};
+void fxaa(BB<{{1},{2}}>){}
+
+template
+__device__ Tensor<float, Shape<512>, LA> elementwise_add(const Tensor<float, Shape<512>, LA>& lhs, const Tensor<float, Shape<512>, LA>& rhs);
