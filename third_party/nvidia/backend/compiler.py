@@ -406,33 +406,33 @@ class CUDABackend(BaseBackend):
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
+        # Pre-compile extern calls before MLIR lowering.
+        # This instantiates template device functions and produces
+        # mangled name mappings that ExternCallOpToLLVM reads.
+        import json as _json
+        llvm.init_targets()
+        context = llvm.context()
+        has_extern_calls = self._pre_compile_extern_calls(
+            mod, metadata, capability, context)
+        if has_extern_calls:
+            mod.set_str_attr("ttg.extern_call_mangled_names",
+                             _json.dumps(metadata["extern_call_mangled"]))
+
         pm.run(mod, 'make_llir')
 
-        # Process extern_call ops: compile .cu to .bc
-        # (happens before MLIR→LLVM because we need module attributes)
-        has_extern_calls = self._process_extern_calls(mod, metadata, capability)
-
         if knobs.compilation.dump_ir_extract_di_local_variables:
-            # comments below on why separate it
             if not knobs.compilation.disable_line_info:
                 pm = ir.pass_manager(mod.context)
                 pm.enable_debug()
                 passes.llvmir.add_di_scope(pm)
                 pm.run(mod, 'make_llir.disable_line_info')
 
-            # insert dbg intrinsic with several DI Attribute including source
-            # var name and type info note: unknown reason for now, but this
-            # pass and add_di_scope has to be run separately, otherwise if we
-            # put them into previous pipline, it trigger a segmentfault without
-            # any error message; could be due to a bug in mlir or pybind11
             pm = ir.pass_manager(mod.context)
             pm.enable_debug()
             passes.llvmir.add_di_local_variable(pm)
             pm.run(mod, 'make_llir.dump_ir_extract_di_local_variables')
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
-        llvm.init_targets()
-        context = llvm.context()
         if knobs.compilation.enable_asan:
             raise RuntimeError(
                 "Address Sanitizer Error: Address sanitizer is currently only supported on the AMD backend")
@@ -453,28 +453,11 @@ class CUDABackend(BaseBackend):
             if paths:
                 llvm.link_extern_libs(llvm_mod, paths)
 
-        # Compile and link extern_call CUDA sources in-process,
-        # sharing the same LLVMContext for type identity.
+        # Link pre-compiled extern_call CUDA bitcodes (same LLVMContext).
         if has_extern_calls:
-            compilation_jobs = metadata.get("extern_call_jobs", [])
-            for job in compilation_jobs:
-                success, cu_mod, error = llvm.compile_cuda_to_module(
-                    context, job["source"], job["filename"], job["args"])
-                if not success:
-                    raise RuntimeError(
-                        f"CUDA compilation failed: {error}\n"
-                        f"Source:\n{job['source']}")
-                if cu_mod:
-                    llvm.link_cuda_module(llvm_mod, cu_mod)
-            # Mark cloned functions alwaysinline so O3 (and the NVPTX
-            # backend's own AlwaysInlinerPass) inline them fully.
-            for fn in llvm_mod.get_functions():
-                if fn.is_declaration():
-                    continue
-                name = fn.name
-                if name.startswith("__triton_ext_") or name.startswith("_Z"):
-                    fn.remove_fn_attr("noinline")
-                    fn.add_alwaysinline_attr()
+            bitcodes = metadata.get("extern_call_bitcodes", [])
+            for bc in bitcodes:
+                llvm.link_cuda_bitcode(llvm_mod, bytes(bc), context)
 
             if not llvm.verify_module(llvm_mod):
                 raise RuntimeError("LLVM module verification failed after extern linking")
@@ -482,6 +465,7 @@ class CUDABackend(BaseBackend):
         # Run optimization
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3,
                              disable_slp_vectorizer=capability == 80)
+        
 
         # Get some metadata
         # warp-specialization mutates num_warps
@@ -504,16 +488,19 @@ class CUDABackend(BaseBackend):
         del context
         return ret
 
-    def _process_extern_calls(self, mod, metadata, capability):
-        """Extract extern_call specs from MLIR module. Compilation deferred
-        to make_llir (after LLVMContext is created for sharing)."""
+    def _pre_compile_extern_calls(self, mod, metadata, capability, llvm_context):
+        """Pre-compile extern_call ops before MLIR lowering.
+        Scans MLIR module for ttg.extern_call ops, builds template function
+        instantiation specs, compiles CUDA sources in-process, and stores
+        mangled name mappings for the lowering pass to use."""
         import json as _json
+        import os
 
-        json_str = mod.get_str_attr("ttg.extern_call_specs")
-        if json_str is None:
+        json_str = llvm.extract_extern_call_specs(mod)
+        if json_str is None or json_str == "[]":
             return False
 
-        import os
+        specs_list = _json.loads(json_str)
 
         install_prefix = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                                       "..", "llvm-project", "install")
@@ -523,119 +510,67 @@ class CUDABackend(BaseBackend):
         resource_dir = os.path.join(install_prefix, "lib", "clang", "23")
         cuda_inc = os.path.join(os.path.dirname(__file__), "include")
         sm = f"sm_{capability // 10}{capability % 10}"
-        specs = _json.loads(json_str)
-        compilation_jobs = []
 
-        for mangled_name, spec in specs.items():
-            libpath = spec["spec"]["libpath"]
-            symbol = spec["spec"]["symbol"]
-            inputs = spec["inputs"]
+        dtype_to_scalar = {
+            "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
+            "f16": llvm.ScalarType.Fp16, "fp16": llvm.ScalarType.Fp16,
+            "bf16": llvm.ScalarType.Bf16,
+            "f64": llvm.ScalarType.Fp32, "fp64": llvm.ScalarType.Fp32,
+            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32,
+            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64,
+        }
 
-            generated_cu = self._generate_cu_wrapper(mangled_name, libpath, symbol, inputs)
+        # Group by libpath
+        by_libpath = {}
+        for spec in specs_list:
+            libpath = spec["libpath"]
+            by_libpath.setdefault(libpath, []).append(spec)
 
-            # Build clang driver args (used for in-process or subprocess fallback)
-            clang_args = [
-                "-x", "cuda",
-                "-std=c++20",
-                "-O2",
-                "--cuda-device-only",
-                "--cuda-gpu-arch=" + sm,
-                "-nocudalib",
-                "-D__device__=__attribute__((device))",
-                "-D__global__=__attribute__((global))",
-                "-D__x86_64__",
-                "-I", cuda_inc,
-                "-resource-dir", resource_dir
-            ]
-            compilation_jobs.append({
-                "source": generated_cu,
-                "filename": "wrapper.cu",
-                "args": clang_args,
-            })
+        compiled_bitcodes = []
+        mangled_names = {}  # dict[original_symbol] = mangled_name
 
-        metadata["extern_call_jobs"] = compilation_jobs
+        for libpath, specs in by_libpath.items():
+            with open(libpath) as f:
+                source = f.read()
+
+            instantiations = []
+            for spec_entry in specs:
+                symbol = spec_entry["symbol"]
+                inst = llvm.DeviceFunctionInstantiation()
+                inst.symbol = symbol
+
+                param_types = []
+                for inp in spec_entry["inputs"]:
+                    tp = llvm.TensorParameter()
+                    tp.type = dtype_to_scalar.get(inp["dtype"], llvm.ScalarType.Fp32)
+                    tp.shape = inp["shape"]
+                    tp.layout_shape = inp["shape"]
+                    tp.reg_basis = inp.get("reg_bases", [])
+                    tp.lane_basis = inp.get("lane_bases", [])
+                    tp.warp_basis = inp.get("warp_bases", [])
+                    tp.n_warps = inp.get("num_warps", 1)
+                    param_types.append(tp)
+                inst.param_types = param_types
+                instantiations.append(inst)
+
+            ok, bitcode, error, results = llvm.compile_cuda_to_module(
+                llvm_context, source, sm, resource_dir,
+                [cuda_inc, "/usr/local/cuda-13.1/targets/x86_64-linux/include"],
+                instantiations)
+
+            if not ok:
+                raise RuntimeError(
+                    f"In-process CUDA compilation failed for {libpath}: {error}")
+
+            compiled_bitcodes.append(list(bitcode))  # bytes → list of ints for JSON
+
+            for symbol, mangled in results:
+                mangled_names[symbol] = mangled
+
+        metadata["extern_call_bitcodes"] = compiled_bitcodes
+        metadata["extern_call_mangled"] = mangled_names
         return True
 
-    def _generate_cu_wrapper(self, mangled_name, libpath, symbol, inputs):
-        """Generate CUDA wrapper source from layout metadata.
-        inputs is a JSON list of per-operand layout specs.
-        """
-        import os
-
-        abs_libpath = os.path.abspath(libpath)
-        lines = [f'#include "{abs_libpath}"', '']
-
-        for i, layout in enumerate(inputs):
-            shape = layout["shape"]
-            num_warps = layout["num_warps"]
-            cpp_dtype = self._triton_dtype_to_cpp(layout.get("dtype", "f32"))
-
-            reg_bases = layout.get("reg_bases", [])
-            lane_bases = layout.get("lane_bases", [])
-            warp_bases = layout.get("warp_bases", [])
-
-            rank = len(shape)
-            n_reg = len(reg_bases) // max(rank, 1) if reg_bases else 0
-            n_lane = len(lane_bases) // max(rank, 1) if lane_bases else 0
-            n_warp = len(warp_bases) // max(rank, 1) if warp_bases else 0
-
-            shape_str = ",".join(str(s) for s in shape)
-            lines.append(f"using S{i} = Shape<{shape_str}>;")
-            lines.append(f"using TL{i} = TensorLayout<S{i}, {num_warps}>;")
-
-            def format_bases(bases, rank_val, n_bases):
-                if not bases or n_bases == 0:
-                    return ""
-                result = []
-                for b in range(n_bases):
-                    vals = bases[b * rank_val:(b + 1) * rank_val]
-                    result.append("IntTuple<" + str(rank_val) + ">{" + ",".join(str(v) for v in vals) + "}")
-                return ",".join(result)
-
-            reg_str = format_bases(reg_bases, rank, n_reg)
-            lane_str = format_bases(lane_bases, rank, n_lane)
-            warp_str = format_bases(warp_bases, rank, n_warp)
-
-            lines.append(f"using L{i} = TL{i}::Layout<")
-            lines.append(f"    TL{i}::BasisGroup<{n_reg}>{{{reg_str}}}," if n_reg > 0 else f"    TL{i}::BasisGroup<0>{{}},")
-            lines.append(f"    TL{i}::BasisGroup<{n_lane}>{{{lane_str}}}," if n_lane > 0 else f"    TL{i}::BasisGroup<5>{{}},")
-            lines.append(f"    TL{i}::BasisGroup<{n_warp}>{{{warp_str}}}")
-            lines.append(f"  >;")
-            lines.append(f"using TT{i} = Tensor<{cpp_dtype}, S{i}, L{i}>;")
-            lines.append("")
-
-        num_inputs = len(inputs)
-        # void* interface: output buffer first, then input pointers.
-        # The lowering alloca's a buffer, passes its pointer as first arg,
-        # then loads the result struct after the call.
-        arg_list = "void* _out" + ("".join(f", void* _arg{j}" for j in range(num_inputs)) if num_inputs else "")
-        extra = ", unsigned int, unsigned char*, unsigned char*"
-        lines.append(f'extern "C" __device__ void {mangled_name}({arg_list}{extra}) {{')
-        # Cast inputs back to typed references, each operand with its own type
-        for j in range(num_inputs):
-            lines.append(f"    const TT{j}& arg{j} = *static_cast<const TT{j}*>(_arg{j});")
-        call_args = ", ".join(f"arg{j}" for j in range(num_inputs))
-        lines.append(f"    *static_cast<TT0*>(_out) = {symbol}({call_args});")
-        lines.append("}")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _triton_dtype_to_cpp(dtype_name):
-        """Convert Triton dtype name to C++ type name."""
-        mapping = {
-            "f32": "float", "fp32": "float",
-            "f64": "double", "fp64": "double",
-            "f16": "__half", "fp16": "__half",
-            "bf16": "__nv_bfloat16",
-            "i32": "int", "s32": "int",
-            "i64": "long long", "s64": "long long",
-            "u32": "unsigned int",
-            "u64": "unsigned long long",
-            "i8": "char", "s8": "char",
-            "u8": "unsigned char",
-        }
-        return mapping.get(dtype_name, "float")
 
     def make_ptx(self, src, metadata, opt, capability):
         ptx_version = get_ptx_version_from_options(opt, self.target.arch)

@@ -632,6 +632,11 @@ void init_triton_ir(py::module &&m) {
                return py::none();
              return py::str(ret.getValue().str());
            })
+      .def("set_str_attr",
+           [](Operation &self, const std::string &name,
+              const std::string &value) {
+             self.setAttr(name, StringAttr::get(self.getContext(), value));
+           })
       .def("get_int_attr",
            [](Operation &self, const std::string &name) -> py::object {
              auto ret = self.getAttrOfType<IntegerAttr>(name);
@@ -761,6 +766,11 @@ void init_triton_ir(py::module &&m) {
               if (!ret)
                 return py::none();
               return py::str(ret.getValue().str());
+            })
+       .def("set_str_attr",
+            [](ModuleOp &self, std::string name, std::string value) {
+              self->setAttr(name,
+                            StringAttr::get(self->getContext(), value));
             })
       .def("get_tensordesc_metadata", getTensorDescMetadata)
       .def("create_location_snapshot",

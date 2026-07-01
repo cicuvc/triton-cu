@@ -1,29 +1,17 @@
 #!/bin/bash
 set -euo pipefail
-
-# ============================================================
-# Triton in-process CUDA compilation — build script
-# ============================================================
-# Requires:
-#   - Self-compiled LLVM at LLVM_SYSPATH
-#   - clang/clang++ as compiler
-#   - Does NOT overwrite venv's installed triton
-# ============================================================
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$(dirname "$0")"
 
 export LLVM_SYSPATH=/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install
 export TRITON_CACHE_PATH=${TRITON_CACHE_PATH:-$HOME/.triton/cache}
 export TRITON_OFFLINE_BUILD=1
 mkdir -p /tmp/triton_wheel
 
-# Patch CMakeLists.txt: Clang + clang_compiler.cc
+echo "=== Patching CMakeLists.txt ==="
 python3 << 'PYEOF'
-with open('CMakeLists.txt') as f:
-    c = f.read()
+with open('CMakeLists.txt') as f: c = f.read()
 
-# Clang find_package after MLIR
+# 1) Clang find_package after MLIR
 c = c.replace(
     'find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})',
     '''find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
@@ -38,40 +26,55 @@ if(NOT CLANG_DIR)
 endif()
 find_package(Clang REQUIRED CONFIG PATHS ${CLANG_DIR})''')
 
-# CLANG_INCLUDE_DIRS
+# 2) Add CLANG_INCLUDE_DIRS
 c = c.replace(
     'include_directories(${LLVM_INCLUDE_DIRS})',
     '''include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${CLANG_INCLUDE_DIRS})''')
 
-# Remove AMD LLVM libs (our LLVM lacks AMDGPU target)
-c = c.replace('    LLVMAMDGPUCodeGen\n', '')
-c = c.replace('    LLVMAMDGPUAsmParser\n', '')
+# 3) Remove AMD LLVM/MLIR libs
+for line in ['    MLIRROCDLToLLVMIRTranslation\\n', '    MLIRGPUToROCDLTransforms\\n',
+             '    LLVMAMDGPUCodeGen\\n', '    LLVMAMDGPUAsmParser\\n']:
+    c = c.replace(line, '')
 
-# Add clang libs + LLVMMIRParser (needed without AMDGPUAsmParser)
+# 4) Add clang libs + LLVMMIRParser after LLVMNVPTXCodeGen
 c = c.replace(
-    '    LLVMNVPTXCodeGen\n',
+    '    LLVMNVPTXCodeGen\\n',
     '''    LLVMNVPTXCodeGen
     LLVMMIRParser
 
-    clangCodeGen clangFrontend clangDriver clangBasic
-    clangSerialization clangLex clangParse clangSema clangAST''')
+    clangCodeGen
+    clangFrontend
+    clangDriver
+    clangBasic
+    clangSerialization
+    clangLex
+    clangParse
+    clangSema
+    clangAST
+''')
 
-# Add clang_compiler.cc to sources
+# 5) Add clang_compiler.cc after llvm.cc
 c = c.replace(
-    '                  ${PYTHON_SRC_PATH}/llvm.cc\n                  ${PYTHON_SRC_PATH}/specialize.cc)',
-    '                  ${PYTHON_SRC_PATH}/llvm.cc\n                  ${PYTHON_SRC_PATH}/clang_compiler.cc\n                  ${PYTHON_SRC_PATH}/specialize.cc)')
+    '                  ${PYTHON_SRC_PATH}/llvm.cc\\n                  ${PYTHON_SRC_PATH}/clang_compiler.cc\\n                  ${PYTHON_SRC_PATH}/specialize.cc)',
+    '                  ${PYTHON_SRC_PATH}/llvm.cc\\n                  ${PYTHON_SRC_PATH}/clang_compiler.cc\\n                  ${PYTHON_SRC_PATH}/specialize.cc)')
 
-with open('CMakeLists.txt', 'w') as f:
-    f.write(c)
-print('CMakeLists.txt patched')
+# 6) Clang libs are built without RTTI; match for clang_compiler.cc
+c += '''
+set_source_files_properties(${PYTHON_SRC_PATH}/clang_compiler.cc
+    PROPERTIES COMPILE_FLAGS "-fno-rtti")
+'''
+
+with open('CMakeLists.txt', 'w') as f: f.write(c)
+print('  CMakeLists.txt patched')
 PYEOF
 
-# Build
+echo "=== Building ==="
 rm -rf build
-CC=clang CXX=clang++ cmake -G Ninja 
+CC=clang CXX=clang++ cmake -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_LINKER=ld.lld \
     -DTRITON_BUILD_PYTHON_MODULE=ON \
     -DTRITON_BUILD_PROTON=OFF \
     -DTRITON_BUILD_UT=OFF \
@@ -80,16 +83,15 @@ CC=clang CXX=clang++ cmake -G Ninja
     -DTRITON_CACHE_PATH="${TRITON_CACHE_PATH}" \
     -DTRITON_WHEEL_DIR=/tmp/triton_wheel \
     -B build \
-    "$SCRIPT_DIR"
+    .
 
 ln -sf build/compile_commands.json compile_commands.json
 
 CC=clang CXX=clang++ ninja -C build triton
 
+echo ""
 echo "=== BUILD COMPLETE ==="
-
-cp build/libtriton.so python/triton/_C/libtriton.so
-git checkout CMakeLists.txt
-
-echo "cp build/libtriton.so python/triton/_C/libtriton.so"
-echo "Undo: git checkout CMakeLists.txt"
+echo "  cp build/libtriton.so python/triton/_C/libtriton.so"
+echo "  PYTHONPATH=\"./python:./third_party/nvidia:./third_party/amd:\$PYTHONPATH\" python3 ..."
+echo ""
+echo "Undo patches: git checkout CMakeLists.txt"

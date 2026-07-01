@@ -39,15 +39,12 @@
 #include <pybind11/gil.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+
+#include "python/src/clang_compiler.h"
+
 #include <stdexcept>
 
 namespace py = pybind11;
-
-// In clang_compiler.cc
-std::pair<std::unique_ptr<llvm::Module>, std::string>
-tritonCompileCudaToModule(llvm::LLVMContext &ctx, const std::string &source,
-                          const std::string &filename,
-                          const std::vector<std::string> &args);
 
 namespace llvm {
 struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
@@ -929,6 +926,48 @@ void init_triton_llvm(py::module &&m) {
     llvm::parallel::strategy = llvm::hardware_concurrency(1);
   });
 
+  // Link compiled CUDA bitcode into an LLVM module.
+  m.def("link_cuda_bitcode",
+        [](llvm::Module *dstMod, const std::string &bitcode,
+           llvm::LLVMContext &ctx) {
+          linkBitcodeToModule(dstMod, bitcode, ctx);
+        },
+        py::arg("dst_mod"), py::arg("bitcode"), py::arg("ctx"));
+
+
+  // Extract extern_call specs from an MLIR module (before MLIR lowering).
+  m.def("extract_extern_call_specs",
+        [](mlir::ModuleOp &mod) -> std::string {
+          return tritonExtractExternCallSpecs(mod);
+        },
+        py::arg("mod"));
+
+  // Types for CUDA in-process compilation
+  py::enum_<ScalarType>(m, "ScalarType")
+      .value("Int32", ScalarType::Int32)
+      .value("Int64", ScalarType::Int64)
+      .value("Fp32", ScalarType::Fp32)
+      .value("Fp16", ScalarType::Fp16)
+      .value("Bf16", ScalarType::Bf16)
+      .value("Fp8e4m3", ScalarType::Fp8e4m3)
+      .value("Fp8e5m2", ScalarType::Fp8e5m2);
+
+  py::class_<TensorParameter>(m, "TensorParameter")
+      .def(py::init<>())
+      .def_readwrite("type", &TensorParameter::Type)
+      .def_readwrite("shape", &TensorParameter::Shape)
+      .def_readwrite("layout_shape", &TensorParameter::LayoutShape)
+      .def_readwrite("reg_basis", &TensorParameter::RegBasis)
+      .def_readwrite("lane_basis", &TensorParameter::LaneBasis)
+      .def_readwrite("warp_basis", &TensorParameter::WarpBasis)
+      .def_readwrite("n_warps", &TensorParameter::N_WARPS);
+
+  py::class_<DeviceFunctionInstantiation>(m, "DeviceFunctionInstantiation")
+      .def(py::init<>())
+      .def_readwrite("symbol", &DeviceFunctionInstantiation::FunctionLookupName)
+      .def_readwrite("param_types",
+                     &DeviceFunctionInstantiation::ParamTypes);
+
   m.def("link_extern_libs", [](llvm::Module *dstMod,
                                const std::vector<std::string> &paths) {
     if (paths.empty())
@@ -983,10 +1022,17 @@ void init_triton_llvm(py::module &&m) {
   // Link a CUDA device module directly (no file I/O).
   // The src module must share the same LLVMContext as dst.
   m.def("link_cuda_module",
-        [](llvm::Module *dstMod,
-           std::unique_ptr<llvm::Module> srcMod) -> bool {
-          if (!srcMod)
+        [](llvm::Module *dstMod, py::object srcModObj) -> bool {
+          auto &srcPyClass = py::cast<llvm::Module &>(srcModObj);
+          llvm::Module *srcModPtr = &srcPyClass;
+          if (!srcModPtr)
             throw std::invalid_argument("Source module is null");
+
+          // Steal ownership: release the held unique_ptr so Python
+          // won't double-free after linkInModule consumes the module.
+          auto holder = srcModObj.release();
+          auto srcMod = std::unique_ptr<llvm::Module>(srcModPtr);
+
           srcMod->setTargetTriple(
               llvm::Triple(dstMod->getTargetTriple()));
           srcMod->setDataLayout(dstMod->getDataLayout());
@@ -1008,24 +1054,41 @@ void init_triton_llvm(py::module &&m) {
         },
         py::arg("dst_mod"), py::arg("src_mod"));
 
-  // In-process CUDA compilation: source -> LLVM Module sharing ctx.
-  // Returns (success: bool, module: Module|None, error: str)
+  // In-process CUDA compilation: source + instantiations → bitcode.
+  // Returns (ok, bitcode, error, results) where results is [(symbol, mangled)].
   m.def("compile_cuda_to_module",
         [](llvm::LLVMContext &ctx, const std::string &source,
-           const std::string &filename,
-           const std::vector<std::string> &args) -> py::tuple {
-          auto [mod, error] =
-              tritonCompileCudaToModule(ctx, source, filename, args);
-          if (mod)
-            return py::make_tuple(true,
-                                  py::cast(std::move(mod),
-                                           py::return_value_policy::take_ownership),
-                                  py::str(""));
-          else
-            return py::make_tuple(false, py::none(), py::str(error));
+           const std::string &sm, const std::string &resourceDir,
+           const std::vector<std::string> &includePaths,
+           std::vector<DeviceFunctionInstantiation> &instantiations)
+            -> py::tuple {
+          auto [bitcode, error, results] =
+              tritonCompileCuda(ctx, source, sm, resourceDir, includePaths,
+                                instantiations);
+          if (error.empty()) {
+            py::list pyResults;
+            for (auto &r : results) {
+              pyResults.append(
+                  py::make_tuple(r.Symbol, r.MangledName));
+            }
+            return py::make_tuple(true, py::bytes(bitcode), py::str(""),
+                                  pyResults);
+          } else {
+            return py::make_tuple(false, py::none(), py::str(error),
+                                  py::list());
+          }
         },
-        py::arg("ctx"), py::arg("source"), py::arg("filename"),
-        py::arg("args"));
+        py::arg("ctx"), py::arg("source"), py::arg("sm"),
+        py::arg("resource_dir"), py::arg("include_paths"),
+        py::arg("instantiations"));
+
+  // Link compiled CUDA bitcode into a module (same LLVMContext).
+  m.def("link_cuda_bitcode",
+        [](llvm::Module *dstMod, const std::string &bitcode,
+           llvm::LLVMContext &ctx) {
+          linkBitcodeToModule(dstMod, bitcode, ctx);
+        },
+        py::arg("dst_mod"), py::arg("bitcode"), py::arg("ctx"));
 }
 
 static void triton_stacktrace_signal_handler(void *) {
