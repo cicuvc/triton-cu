@@ -374,8 +374,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
     # LLVM
     LLVMPasses
     LLVMNVPTXCodeGen
-    LLVMAMDGPUCodeGen
-    LLVMAMDGPUAsmParser
 
     Python3::Module
     pybind11::headers

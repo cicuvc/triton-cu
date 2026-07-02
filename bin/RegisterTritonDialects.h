@@ -1,6 +1,4 @@
 #pragma once
-#include "amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
-#include "amd/include/TritonAMDGPUTransforms/Passes.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
@@ -14,11 +12,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-
-// Below headers will allow registration to ROCm passes
-#include "TritonAMDGPUToLLVM/Passes.h"
-#include "TritonAMDGPUTransforms/Passes.h"
-#include "TritonAMDGPUTransforms/TritonGPUConversion.h"
 
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -51,12 +44,9 @@ namespace mlir {
 namespace test {
 void registerTestAliasPass();
 void registerTestAlignmentPass();
-void registerAMDTestAlignmentPass();
 void registerTestAllocationPass();
 void registerTestBufferRegionPass();
 void registerTestMembarPass();
-void registerTestAMDGPUMembarPass();
-void registerTestTritonAMDGPURangeAnalysis();
 void registerTestLoopPeelingPass();
 namespace proton {
 void registerTestScopeIdAllocationPass();
@@ -74,13 +64,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::gluon::registerGluonPasses();
   mlir::test::registerTestAliasPass();
   mlir::test::registerTestAlignmentPass();
-  mlir::test::registerAMDTestAlignmentPass();
   mlir::test::registerTestAllocationPass();
   mlir::test::registerTestBufferRegionPass();
   mlir::test::registerTestMembarPass();
   mlir::test::registerTestLoopPeelingPass();
-  mlir::test::registerTestAMDGPUMembarPass();
-  mlir::test::registerTestTritonAMDGPURangeAnalysis();
   mlir::triton::registerConvertTritonToTritonGPUPass();
   mlir::triton::registerRelayoutTritonGPUPass();
   mlir::triton::gpu::registerAllocateSharedMemoryPass();
@@ -97,43 +84,11 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::NVVM::registerInlinerInterface(registry);
   mlir::registerLLVMDILocalVariable();
 
-  // TritonAMDGPUToLLVM passes
-  mlir::triton::registerAllocateAMDGPUSharedMemory();
-  mlir::triton::registerTritonAMDGPUConvertWarpSpecializeToLLVM();
-  mlir::triton::registerConvertTritonAMDGPUToLLVM();
-  mlir::triton::registerConvertBuiltinFuncToLLVM();
-  mlir::triton::registerConvertWarpPipeline();
-
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertMathToLLVMInterface(registry);
   mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
   mlir::arith::registerConvertArithToLLVMInterface(registry);
-
-  // TritonAMDGPUTransforms passes
-  mlir::registerTritonAMDGPUAccelerateMatmul();
-  mlir::registerTritonAMDGPUOptimizeDescriptorEncoding();
-  mlir::registerTritonAMDGPUOptimizeEpilogue();
-  mlir::registerTritonAMDGPUHoistLayoutConversions();
-  mlir::registerTritonAMDGPUSinkLayoutConversions();
-  mlir::registerTritonAMDGPUPrepareIfCombining();
-  mlir::registerTritonAMDGPUMoveUpPrologueLoads();
-  mlir::registerTritonAMDGPUBlockPingpong();
-  mlir::registerTritonAMDGPUPipeline();
-  mlir::registerTritonAMDGPUScheduleLoops();
-  mlir::registerTritonAMDGPUCanonicalizePointers();
-  mlir::registerTritonAMDGPUConvertToBufferOps();
-  mlir::registerTritonAMDGPUConvertToTensorOps();
-  mlir::registerTritonAMDGPUOptimizeBufferOpPtr();
-  mlir::registerTritonAMDGPUAnnotateBufferOpSplitSafety();
-  mlir::registerTritonAMDGPUInThreadTranspose();
-  mlir::registerTritonAMDGPUCoalesceAsyncCopy();
-  mlir::registerTritonAMDGPUUpdateAsyncWaitCount();
-  mlir::registerTritonAMDGPUWarpPipeline();
-  mlir::registerTritonAMDFoldTrueCmpI();
-  mlir::registerTritonAMDGPUFpSanitizer();
-  mlir::triton::amdgpu::registerTritonAMDGPUOptimizeDotOperands();
-  mlir::registerConSanAMDHooks();
 
   // NVWS passes
   mlir::triton::registerNVWSTransformsPasses();
@@ -145,10 +100,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::test::proton::registerTestScopeIdAllocationPass();
   mlir::triton::proton::registerConvertProtonToProtonGPU();
   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
-  mlir::triton::proton::gpu::registerConvertProtonAMDGPUToLLVM();
   mlir::triton::proton::gpu::registerAllocateProtonSharedMemoryPass();
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
-  mlir::triton::proton::gpu::registerAddSchedBarriersPass();
 
   // Register plugin passes and dialects.
   for (const auto &plugin : mlir::triton::plugin::loadPlugins()) {
