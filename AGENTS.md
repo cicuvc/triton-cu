@@ -1,73 +1,91 @@
-# Working on Triton
+# Working on triton-cu
+
+A fork of [Triton](https://github.com/triton-lang/triton) adding in-process CUDA C++ interop via `gl.call()`.  
+Remote: `git@github.com:cicuvc/triton-cu.git`
 
 ## Build
 - **DO NOT run `pip install -e .`** — it overwrites the venv's standard triton. Use `PYTHONPATH` for local dev.
 - **Use our self-compiled LLVM** at `/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install` via `-DLLVM_SYSPATH=...`. Do NOT use Triton's default precompiled LLVM (symbol mismatch).
 - **Use clang as compiler** (`CC=clang CXX=clang++`). Our LLVM was built with clang; gcc is too slow / memory-hungry for this project.
-- C++/compiler changes: build with ninja directly. CMake invocation:
-  ```
-  export LLVM_SYSPATH=/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install
-  cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DTRITON_BUILD_PYTHON_MODULE=ON -DTRITON_BUILD_PROTON=OFF -DTRITON_BUILD_UT=OFF \
-    -DTRITON_CODEGEN_BACKENDS="nvidia;amd" \
-    -DLLVM_SYSPATH=${LLVM_SYSPATH} \
-    -DTRITON_CACHE_PATH=${TRITON_CACHE_PATH} \
-    -DTRITON_WHEEL_DIR=/tmp/triton_wheel \
-    -B build .
-  ninja -C build triton
-  ```
+- **Canonical build**: `bash build.sh` (handles cmake + ninja + lld).
+  - Clang libs (CodeGen, Frontend, Driver, Sema, AST, etc.) and LLVMMIRParser are **permanently** in `CMakeLists.txt`.
+  - `clang_compiler.cc` is compiled with `-fno-rtti` (Clang libs are built without RTTI).
 - Build output: `build/libtriton.so`. Copy to `python/triton/_C/libtriton.so` for local dev.
 - Run with `PYTHONPATH` set to local source tree so our modified Python files take priority over the venv install:
   ```
-  PYTHONPATH="$(pwd)/python:$(pwd)/third_party/nvidia:$(pwd)/third_party/amd" python3 ...
+  PYTHONPATH="$(pwd)/python:$(pwd)/third_party/nvidia" python3 ...
   ```
 
 ## Testing
 - `make test-lit` — lit tests (no GPU needed, from build dir).
-- `make test-cpp` — C++ unit tests (no GPU needed).
 - `make test-unit` — Python GPU tests (pytest, parallel by default via `-n 8`).
 - `make test-regression`, `make test-gluon`, `make test-proton`, `make test-interpret` — other suites.
 - Run lit: `cd $BUILD_DIR && ninja triton-opt && lit -v test/<path>.mlir`
-- Run single pytest: `pytest -s --tb=short file.py::test_name`. Pytest `addopts = --tb=short` is in `pytest.ini`.
-- GPU-only tests go in `python/test/unit/` or `python/test/gluon/`. Name them `test_<feature>_<condition>`.
+- Run single test: `pytest -s --tb=short python/test/unit/language/test_core.py::test_name`
+- **E2E test**: `python3 gluon_vectorized_add_test.py` (tests `gl.call` with in-process CUDA compilation).
 
 ## Compiler Pipeline (CUDABackend)
 The compiler lowering runs as an ordered dict of stage extensions, each a function `compile_ir(mod, metadata) -> mod`:
 
 1. **ttir** — Triton IR: inlining, canonicalization, CSE, loop unroll. Python AST → MLIR `tt` dialect.
 2. **ttgir** — TritonGPU IR: `tt` → `ttg` dialect conversion, coalescing, matmul acceleration, layout conversion, software pipelining, warp specialization, etc.
-3. **llir** — LLVM IR: `ttg` → LLVM dialect conversion (`ConvertTritonGPUToLLVM` pass), MLIR → `llvm::Module` translation, **extern libs linking**, LLVM optimization (O3 + BreakStructPhiNodes), NVVM→LLVM conversion.
+3. **llir** — LLVM IR: `ttg` → LLVM dialect conversion (`ConvertTritonGPUToLLVM` pass), MLIR → `llvm::Module` translation,
+   **inline extern CUDA functions** (link_cuda_bitcode), LLVM optimization (O3), NVVM→LLVM conversion.
 4. **ptx** — LLVM → PTX assembly via `TargetMachine::addPassesToEmitFile`.
-5. **cubin** — PTX → CUDA binary via `ptxas` (`make_cubin` calls `ptxas` + driver `load_binary`).
+5. **cubin** — PTX → CUDA binary via `ptxas`.
 
 Key orchestration file: `third_party/nvidia/backend/compiler.py` (class `CUDABackend`).
 
-## Extern Libs / External CUDA C++ Interop
-- External device functions (e.g. libdevice) are linked as LLVM bitcode (`.bc`) at the **llir** stage.
-- User passes `extern_libs={'name': '/path/to/lib.bc'}` in kernel launch kwargs.
-- `make_llir()` checks `has_extern_deps()` (any extern linkage symbols), then calls `llvm.link_extern_libs(mod, paths)` which uses `llvm::Linker::linkInModule` with `LinkOnlyNeeded`.
-- Linked-in extern functions are set to `InternalLinkage` to avoid being mistaken for kernel entry points.
-- C++ implementation of linking: `python/src/llvm.cc:916` (`link_extern_libs`).
+## Extern CUDA C++ Interop (`gl.call()`)
+In-process CUDA template instantiation via clang CodeGen at JIT time.
 
-### Adding a new extern function call
-Python-side pattern (see `third_party/nvidia/language/cuda/libdevice.py`):
-1. Define a `@core.extern` (or `@builtin`) function that calls `core.extern_elementwise(lib_name, lib_path, [args], type_dict, is_pure, _semantic)`.
-2. This emits a `tt.extern_elementwise` op with `symbol="__my_func"`.
-3. At LLVM lowering (`lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp:183`), it becomes an `LLVM::CallOp` to `@__my_func`.
-4. The bitcode containing `__my_func` is linked at the llir stage.
+### Pipeline
+```
+Triton/Gluon kernel with gl.call()
+  │
+  ▼
+MLIR tt.call_external op (extern_elementwise)
+  │
+  ├──► _pre_compile_extern_calls() — before pm.run
+  │    extract_extern_call_specs() from MLIR ops
+  │    compile_cuda_to_module() — clang CompilerInvocation
+  │      TensorTypeHelpers: instantiate template device functions
+  │      CustomAstConsumer + CustomFEAction: CreateLLVMCodeGen
+  │      Returns bitcode bytes + mangled function names
+  │    Store mangled names as module attribute
+  │
+  ▼
+ttgir → llir lowering (ExternCallOpToLLVM.cpp)
+  Build clang-compatible {[N x scalar]} struct types
+  Args passed by pointer (alloca + store + ptr) matching C++ ref convention
+  Post-call: extractvalue/insertvalue back to MLIR's flat {scalar x N} structs
+  │
+  ▼
+llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
+  Same LLVMContext parsing
+  CloneFunctionInto with DifferentModule flag
+  Callee remapping (intrinsic decls created in dstMod)
+  Ret-type fix: alloca + store + load launders named→literal struct Type*
+  DISubprogram fix (strip debug)
+  alwaysinline attribute → O3 inlines fully
+```
 
-### Custom pipeline stages (plugins)
-- Inject via `knobs.runtime.add_stages_inspection_hook`. The hook receives `stages` dict and can wrap/replace stage functions.
-- Example: `python/test/unit/plugins/custom_stages.py` — replaces the `"ttir"` stage with a wrapper that runs a custom MLIR pass.
-- For custom MLIR ops: `TRITON_EXT_ENABLED=1` + `TRITON_PLUGIN_PATHS=path/to/libPlugin.so` to load an MLIR dialect plugin. Define ops with `@builtin` + `builder.create_*` bindings.
-- See `python/test/unit/plugins/custom_ops.py` for an example custom op defined via `@builtin`.
+### Key Files
+| File | Role |
+|------|------|
+| `python/src/clang_compiler.cc` / `.h` | CUDACompiler, TensorTypeHelpers, CustomAstConsumer, extractExternCallSpecs, compileCudaToModule, linkBitcodeToModule |
+| `python/src/llvm.cc` | Python bindings: ScalarType, TensorParameter, DeviceFunctionInstantiation, extract_extern_call_specs, compile_cuda_to_module, link_cuda_bitcode |
+| `python/src/ir.cc` | `set_str_attr` on Operation/ModuleOp |
+| `lib/Conversion/TritonGPUToLLVM/ExternCallOpToLLVM.cpp` | `{[N x scalar]}` return type lowering, by-pointer arg convention |
+| `third_party/nvidia/backend/compiler.py` | `_pre_compile_extern_calls()`, bitcode linking in `make_llir()` |
+| `tt_plugin.cu` | CUDA C++ device library (Shape, TensorLayout, Layout, Tensor templates) |
+| `CMakeLists.txt` | Permanent Clang lib linkage, `-fno-rtti` for clang_compiler.cc, LLVMMIRParser |
 
-## LinearLayout System
-- Mathematically: layouts are linear functions over GF(2) mapping hardware locations (`register`, `lane`, `warp`, `block`) → logical tensor indices (`dim0`, `dim1`, ...).
-- Core class: `include/triton/Tools/LinearLayout.h` / `lib/Tools/LinearLayout.cpp` (uses `f2reduce` for GF(2) linear algebra).
-- Conversion from `ttg` encoding attributes to LinearLayout: `lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp` (e.g. `blockedToLinearLayout`, `mmaToLinearLayout`, `swizzledSharedToLinearLayout`).
-- Codegen applies layouts: `lib/Conversion/TritonGPUToLLVM/Utility.cpp` `applyLinearLayout()` — emits LLVM IR that computes thread/lane/warp indices from layout bases.
-- Python bindings: `python/src/linear_layout.cc` → exposed as `triton.tools.LinearLayout`.
+### Important Details
+- **Same LLVMContext for clone**: parsed bitcode uses Triton's context (not tmpCtx) to avoid metadata leaks.
+- **Ret-type fix**: named `%struct.Tensor` from clone has different `Type*` than literal `{[16 x float]}` even in same LLVMContext. alloca+store+load launders the type.
+- **Callee remapping**: intrinsic declarations (e.g. `llvm.lifetime.start`) are not auto-created in dstMod; must explicitly `Function::Create` them.
+- **No wrappers**: C++ references become `ptr` params in LLVM IR. Lowering uses alloca+store+ptr matching clang's convention.
 
 ## Key C++ Source Locations
 | Purpose | Path |
@@ -77,11 +95,10 @@ Python-side pattern (see `third_party/nvidia/language/cuda/libdevice.py`):
 | Triton→TritonGPU conversion | `lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp` |
 | TritonGPU→LLVM lowering (base) | `lib/Conversion/TritonGPUToLLVM/` |
 | TritonGPU→LLVM (NVIDIA-specific) | `third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TritonGPUToLLVM.cpp` |
-| ExternElementwiseOp lowering | `lib/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVM.cpp:183` |
-| FuncOp/CallOp lowering | `lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp`, `ControlFlowOpToLLVM.cpp` |
-| Python IR builder bindings | `python/src/ir.cc` |
-| Python LLVM tool bindings | `python/src/llvm.cc` |
-| NVIDIA Python compiler | `third_party/nvidia/backend/compiler.py` |
+| Extern call lowering | `lib/Conversion/TritonGPUToLLVM/ExternCallOpToLLVM.cpp` |
+| clang CUDA compiler | `python/src/clang_compiler.cc` / `python/src/clang_compiler.h` |
+| Python bindings (CUDA interop) | `python/src/llvm.cc` (extract/cuda/link), `python/src/ir.cc` (set_str_attr) |
+| NVIDIA Python compiler | `third_party/nvidia/backend/compiler.py` (class `CUDABackend`) |
 | Python semantic layer | `python/triton/language/semantic.py` |
 | Language core (builtins) | `python/triton/language/core.py` |
 | Code generator (AST→IR) | `python/triton/compiler/code_generator.py` |
@@ -94,7 +111,7 @@ triton-opt /tmp/<file>.mlir --run-reproducer
 ```
 
 ## Linting
-- `ruff --fix` for Python under `python/`, `third_party/{amd,nvidia,proton}/`, `test/`
+- `ruff --fix` for Python under `python/`, `third_party/nvidia/`, `third_party/proton/`, `test/`
 - `yapf -p -i` for Python formatting
 - `clang-format` for C++/CUDA
 - `mypy` for type checking
