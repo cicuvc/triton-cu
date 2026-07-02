@@ -228,6 +228,15 @@ endif()
 # MLIR
 find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
 
+if(NOT CLANG_DIR)
+  if(DEFINED LLVM_LIBRARY_DIR AND NOT "${LLVM_LIBRARY_DIR}" STREQUAL "")
+    set(CLANG_DIR "${LLVM_LIBRARY_DIR}/cmake/clang")
+  elseif(NOT "${LLVM_SYSPATH}" STREQUAL "")
+    set(CLANG_DIR "${LLVM_SYSPATH}/lib/cmake/clang")
+  endif()
+endif()
+find_package(Clang REQUIRED CONFIG PATHS ${CLANG_DIR})
+
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
@@ -290,6 +299,7 @@ endif()
 include_directories(".")
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${CLANG_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
@@ -364,16 +374,25 @@ if(TRITON_BUILD_PYTHON_MODULE)
     MLIRSupport
     MLIRTargetLLVMIRExport
     MLIRMathToLLVM
-    MLIRROCDLToLLVMIRTranslation
     MLIRGPUDialect
     MLIRSCFToControlFlow
     MLIRIndexToLLVM
-    MLIRGPUToROCDLTransforms
     MLIRUBToLLVM
 
     # LLVM
     LLVMPasses
     LLVMNVPTXCodeGen
+    LLVMMIRParser
+
+    clangCodeGen
+    clangFrontend
+    clangDriver
+    clangBasic
+    clangSerialization
+    clangLex
+    clangParse
+    clangSema
+    clangAST
 
     Python3::Module
     pybind11::headers
@@ -418,6 +437,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
                   ${PYTHON_SRC_PATH}/passes.cc
                   ${PYTHON_SRC_PATH}/interpreter.cc
                   ${PYTHON_SRC_PATH}/llvm.cc
+                  ${PYTHON_SRC_PATH}/clang_compiler.cc
                   ${PYTHON_SRC_PATH}/specialize.cc)
 
   # Link triton with its dependencies
@@ -436,6 +456,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     target_link_libraries(triton PRIVATE z)
   endif()
   target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
+
+  set_source_files_properties(${PYTHON_SRC_PATH}/clang_compiler.cc
+      PROPERTIES COMPILE_FLAGS "-fno-rtti")
 
   if(NOT TRITON_EXT_ENABLED)
     # When extensions are disabled, only export the Python entrypoint.
