@@ -636,6 +636,14 @@ CUDACompiler::CUDACompiler(
     CGOpts.RelocationModel = llvm::Reloc::Static;
     CGOpts.VectorizeSLP = true;
     CGOpts.OptimizationLevel = OptLevel;
+
+    auto &L = inv->getLangOpts();
+    L.AllowFPReassoc = true;
+    L.NoHonorNaNs = true;
+    L.NoHonorInfs = true;
+    L.NoSignedZero = true;
+    L.AllowRecip = true;
+    L.ApproxFunc = true;
   } while (0);
   CI = std::make_unique<clang::CompilerInstance>(std::move(inv));
   CI->createDiagnostics();
