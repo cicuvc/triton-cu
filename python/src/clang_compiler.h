@@ -140,6 +140,11 @@ struct TensorParameter {
   LayoutInfo Layout;
 };
 
+struct TupleType {
+  std::vector<std::variant<std::nullptr_t, TensorParameter, TupleType>>
+      Types;
+};
+
 struct ShapeResult {
   clang::ClassTemplateSpecializationDecl *spec = nullptr;
   clang::QualType type;
@@ -166,7 +171,8 @@ struct CudaFuncRequest {
 struct CudaFuncResult {
   std::string Symbol;
   std::string MangledName;
-  std::optional<TensorParameter> ReturnType;
+  std::vector<TensorParameter> ReturnTypes;
+  std::vector<std::string> ExtractorMangledNames;
 };
 
 // ============================================================
@@ -221,6 +227,7 @@ struct TypeBuilder {
   clang::ClassTemplateDecl *ShapeTemplateType;
   clang::ClassTemplateDecl *LayoutFactoryTemplateType;
   clang::ClassTemplateDecl *IntTupleTemplateType;
+  clang::ClassTemplateDecl *IntsTemplateType;
   clang::ClassTemplateDecl *TensorTemplateType;
 
   TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S);
@@ -232,6 +239,7 @@ struct TypeBuilder {
   ShapeResult buildShape(llvm::ArrayRef<uint32_t> shapeDims);
   clang::ClassTemplateSpecializationDecl *
   BuildIntTuple(clang::SourceLocation SL, unsigned N);
+  clang::QualType BuildInts(uint32_t N);
   LayoutFactoryContext BuildLayoutFactory(const ShapeResult &shape,
                                           uint32_t N_WARPS);
   std::pair<std::optional<clang::TemplateArgument>,
@@ -264,7 +272,9 @@ struct TypeInspector {
   LayoutInfo ParseLayoutType(clang::QualType type);
   TensorParameter
   ParseTensorType(clang::ClassTemplateSpecializationDecl *type);
-  std::variant<std::nullptr_t, TensorParameter>
+  TupleType
+  ParseTupleType(clang::ClassTemplateSpecializationDecl *type);
+  std::variant<std::nullptr_t, TensorParameter, TupleType>
   DispatchTypeParsing(clang::QualType type);
 };
 
@@ -324,10 +334,11 @@ struct CUDACompiler {
                     const llvm::StringRef &ModuleName);
 
   clang::QualType BuildTensor(const TensorParameter &);
+  clang::QualType BuildInts(uint32_t N);
   clang::FunctionDecl *
   LookupFunction(const llvm::StringRef &Name,
                  const llvm::ArrayRef<clang::QualType> &Args);
-  std::variant<std::nullptr_t, TensorParameter>
+  std::variant<std::nullptr_t, TensorParameter, TupleType>
   EvaluateFunctionReturnType(clang::FunctionDecl *FD);
   llvm::Function *InstantiationFunction(clang::FunctionDecl *);
   std::unique_ptr<llvm::Module> EmitFinalModule();
@@ -443,7 +454,8 @@ std::string tritonExtractExternCallSpecs(mlir::ModuleOp module);
 
 // Patch extern_call op result types based on CUDA-inferred return types.
 // Returns empty string on success, error message on failure.
-// jsonReturnTypes: {"symbol": {"scalar":"f32","shape":[512],"reg_basis":[...],...}, ...}
+// jsonReturnTypes: {"symbol": [{"scalar":"f32","shape":[512],"reg_basis":[...],...}, ...], ...}
+// Array has one entry per result; single-result functions use a one-element array.
 std::string
 tritonPatchExternCallResultTypes(mlir::ModuleOp module,
                                  const std::string &jsonReturnTypes);

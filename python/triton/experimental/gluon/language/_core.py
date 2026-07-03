@@ -780,7 +780,9 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
         src_path: Path to the ``.cu`` source file.
         func: Name of the ``__device__`` function.
         *args: Tensor arguments.
-        result_layout: Layout for the result tensor.
+        result_layout: Layout for the result tensor, or a list/tuple of
+            layouts for functions returning multiple tensors
+            (e.g. std::tuple<Tensor<...>, Tensor<...>>).
         assert_no_conv: If True, raise an error if a convert_layout is needed
             between the extern_call's result layout and the user's result_layout.
         use_fast_math: If True, enable fast-math flags on the LLVM function.
@@ -788,7 +790,6 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
     from pathlib import Path
     src_path = _unwrap_if_constexpr(src_path)
     func = _unwrap_if_constexpr(func)
-    result_layout = _unwrap_if_constexpr(result_layout)
     assert_no_conv = _unwrap_if_constexpr(assert_no_conv)
     use_fast_math = _unwrap_if_constexpr(use_fast_math)
 
@@ -800,7 +801,11 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
         raise FileNotFoundError(f"extern call source not found: {src_path}")
 
     tensors = [_semantic.to_tensor(a) for a in args]
+    if isinstance(result_layout, (list, tuple)):
+        result_layouts = [_unwrap_if_constexpr(lo) for lo in result_layout]
+    else:
+        result_layouts = [_unwrap_if_constexpr(result_layout)]
     return _semantic.call_extern(str(src_path), func, tensors,
-                                 result_layouts=[result_layout],
+                                 result_layouts=result_layouts,
                                  assert_no_conv=assert_no_conv,
                                  use_fast_math=use_fast_math)

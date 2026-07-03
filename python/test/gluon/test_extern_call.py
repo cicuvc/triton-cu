@@ -43,6 +43,20 @@ def reduce_kernel(x_ptr, out_ptr):
     gl.store(out_ptr + out_idx, red_vals)
 
 
+@gluon.jit
+def split_add_kernel(x_ptr, y_ptr, sum_ptr, diff_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([16], [32], [1], [0])
+    idx = gl.arange(0, 512, layout=layout)
+    x_vals = gl.load(x_ptr + idx)
+    y_vals = gl.load(y_ptr + idx)
+    sum_vals, diff_vals = gl.call(
+        "python/test/gluon/tt_plugin.cu", "split_add",
+        x_vals, y_vals,
+        result_layout=[layout, layout])
+    gl.store(sum_ptr + idx, sum_vals)
+    gl.store(diff_ptr + idx, diff_vals)
+
+
 @pytest.mark.parametrize("BLOCK", [512])
 def test_elementwise_add(BLOCK):
     torch.set_default_device('cuda')
@@ -71,3 +85,16 @@ def test_reduce_different_shape():
     reduce_kernel[(1,)](x, out, num_warps=1)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, x.sum(1))
+
+
+@pytest.mark.parametrize("BLOCK", [512])
+def test_split_add_tuple(BLOCK):
+    torch.set_default_device('cuda')
+    x = torch.randn((BLOCK,), dtype=torch.float32)
+    y = torch.randn((BLOCK,), dtype=torch.float32)
+    out_sum = torch.empty_like(x)
+    out_diff = torch.empty_like(x)
+    split_add_kernel[(1,)](x, y, out_sum, out_diff, num_warps=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out_sum, x + y)
+    torch.testing.assert_close(out_diff, x - y)

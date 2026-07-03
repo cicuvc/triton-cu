@@ -1012,7 +1012,9 @@ void init_triton_llvm(py::module &&m) {
       .def(py::init<>())
       .def_readonly("symbol", &CudaFuncResult::Symbol)
       .def_readonly("mangled_name", &CudaFuncResult::MangledName)
-      .def_readonly("return_type", &CudaFuncResult::ReturnType);
+      .def_readonly("return_types", &CudaFuncResult::ReturnTypes)
+      .def_readonly("extractor_mangled_names",
+                    &CudaFuncResult::ExtractorMangledNames);
 
   m.def("link_extern_libs", [](llvm::Module *dstMod,
                                const std::vector<std::string> &paths) {
@@ -1113,11 +1115,14 @@ void init_triton_llvm(py::module &&m) {
            if (error.empty()) {
              py::list pyResults;
              for (auto &r : results) {
-               auto pyRetType = r.ReturnType.has_value()
-                                    ? py::cast(r.ReturnType.value())
-                                    : py::none();
+               py::list pyRetTypes;
+               for (auto &tp : r.ReturnTypes)
+                 pyRetTypes.append(py::cast(tp));
+               py::list pyExtrNames;
+               for (auto &n : r.ExtractorMangledNames)
+                 pyExtrNames.append(py::str(n));
                pyResults.append(py::make_tuple(r.Symbol, r.MangledName,
-                                               pyRetType));
+                                                pyRetTypes, pyExtrNames));
              }
              return py::make_tuple(true, py::bytes(bitcode), py::str(""),
                                    pyResults);

@@ -2,6 +2,7 @@
 #include <initializer_list>
 #include <utility>
 #include <algorithm>
+#include <tuple>
 
 template<uint32_t... DIMS>
 struct Shape{
@@ -132,4 +133,26 @@ __device__ Tensor<T, Shape<32>, TRes> reduce(const Tensor<T, Shape<32, 32>, TArg
         Result.data[0] += Vals.data[i];
     }
     return Result;
+}
+
+template<typename T, uint32_t TILE_WIDTH, typename TLayout>
+__device__ std::tuple<Tensor<T, Shape<TILE_WIDTH>, TLayout>,
+                       Tensor<T, Shape<TILE_WIDTH>, TLayout>>
+split_add(const Tensor<T, Shape<TILE_WIDTH>, TLayout>& a,
+          const Tensor<T, Shape<TILE_WIDTH>, TLayout>& b) {
+    Tensor<T, Shape<TILE_WIDTH>, TLayout> sum, diff;
+    #pragma unroll TLayout::REG_SIZE
+    for(int i = 0; i < TLayout::REG_SIZE; i++) {
+        sum.data[i] = a.data[i] + b.data[i];
+        diff.data[i] = a.data[i] - b.data[i];
+    }
+    return {sum, diff};
+}
+
+template<uint32_t N>
+struct Ints{};
+
+template<uint32_t N, typename... Ts>
+__device__ auto get_tuple_elem(const Ints<N>&, const std::tuple<Ts...>& V){
+    return std::get<N>(V);
 }

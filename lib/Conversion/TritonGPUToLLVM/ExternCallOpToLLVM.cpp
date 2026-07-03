@@ -38,10 +38,36 @@ getMangledName(ModuleOp module, const std::string &symbol,
   return success();
 }
 
-// Build a clang-compatible struct type: { [N x elemTy] }
-// Clang compiles C++ "T data[REG_SIZE]" into a struct containing an array.
-// MLIR's type converter produces flat { scalar x N }. This function
-// converts the flat type to the array-containing form.
+static LogicalResult getExtractorNames(ModuleOp module,
+                                        const std::string &symbol,
+                                std::vector<std::string> &names) {
+  auto attr = module->getAttrOfType<StringAttr>(
+      "ttg.extern_call_extractor_names");
+  if (!attr)
+    return success();
+
+  auto json = llvm::json::parse(attr.getValue());
+  if (!json)
+    return success();
+
+  auto *obj = json->getAsObject();
+  if (!obj)
+    return success();
+
+  auto it = obj->find(symbol);
+  if (it == obj->end())
+    return success();
+
+  auto arr = it->second.getAsArray();
+  if (!arr)
+    return success();
+
+  for (auto &v : *arr)
+    if (auto s = v.getAsString())
+      names.push_back(s->str());
+  return success();
+}
+
 static LLVM::LLVMStructType
 buildClangStructType(MLIRContext *ctx, Type flatStructType) {
   auto flatST = cast<LLVM::LLVMStructType>(flatStructType);
@@ -54,9 +80,6 @@ buildClangStructType(MLIRContext *ctx, Type flatStructType) {
   return LLVM::LLVMStructType::getLiteral(ctx, {arrayTy});
 }
 
-// Convert the packed result type to clang-compatible form.
-// Single result:  { elemTy x N }          ->   { [N x elemTy] }
-// Multiple:       { {e0 x N0}, {e1 x N1} } ->  { {[N0 x e0]}, {[N1 x e1]} }
 static Type buildClangPackedReturnType(MLIRContext *ctx, Type packedResult) {
   auto packedST = cast<LLVM::LLVMStructType>(packedResult);
   SmallVector<Type> clangFields;
@@ -65,8 +88,6 @@ static Type buildClangPackedReturnType(MLIRContext *ctx, Type packedResult) {
   return LLVM::LLVMStructType::getLiteral(ctx, clangFields);
 }
 
-// After the call, convert a clang struct { [N x elemTy] }
-// back to MLIR's flat struct { elemTy x N }.
 static Value convertClangToFlat(Location loc,
                                 ConversionPatternRewriter &rewriter,
                                 Value clangResult, Type flatType) {
@@ -118,10 +139,10 @@ struct ExternCallOpConversion
         rewriter);
 
     unsigned numTensorArgs = op.getInputs().size();
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx, 0);
     for (unsigned i = 0; i < numTensorArgs; ++i) {
       auto structVal = promotedOperands[i];
       auto structTy = structVal.getType();
-      auto ptrTy = LLVM::LLVMPointerType::get(ctx, 0);
       Value one = b.i32_val(1);
       auto *builder = &static_cast<OpBuilder &>(rewriter);
       Value stackPtr = LLVM::AllocaOp::create(
@@ -144,10 +165,75 @@ struct ExternCallOpConversion
         return failure();
     }
 
-    // Build clang-compatible return type: { [N x elemTy] } instead
-    // of MLIR's flat { elemTy x N }.
-    // For single result, packedResult IS the flat tensor struct.
-    // For multiple results, packedResult wraps flattened tensor structs.
+    std::vector<std::string> extractorNames;
+    (void)getExtractorNames(module, op.getSymbol().str(), extractorNames);
+
+    if (!extractorNames.empty()) {
+      // Tuple return: emit sret call + extractor calls.
+      if (extractorNames.size() != numResults)
+        return op.emitError("extractor count mismatch for '")
+               << op.getSymbol() << "': " << extractorNames.size()
+               << " extractors for " << numResults << " results";
+
+      auto packedST = cast<LLVM::LLVMStructType>(packedResult);
+      Type clangPackedTy = buildClangPackedReturnType(ctx, packedResult);
+
+      // Allocate sret buffer matching the packed clang struct type.
+      Value one = b.i32_val(1);
+      auto *builder = &static_cast<OpBuilder &>(rewriter);
+      auto mainRET = LLVM::AllocaOp::create(
+          *builder, loc, ptrTy, clangPackedTy, one, 0);
+
+      // Build main call: void @fn(ptr sret, ptr arg0, ptr arg1, ...)
+      SmallVector<Type> mainArgTypes;
+      mainArgTypes.push_back(ptrTy);
+      mainArgTypes.append(promotedTypes.begin(), promotedTypes.end());
+      auto mainFuncType = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(ctx), mainArgTypes);
+
+      auto mainFuncOp = appendOrGetExternFuncOp(
+          rewriter, op, mangledName, mainFuncType, "", op.getLibpath());
+
+      SmallVector<Value> mainArgs;
+      mainArgs.push_back(mainRET.getResult());
+      mainArgs.append(promotedOperands.begin(), promotedOperands.end());
+
+      auto mainCall = LLVM::CallOp::create(rewriter, loc, mainFuncOp, mainArgs);
+      mainCall.getProperties().setOpBundleSizes(
+          rewriter.getDenseI32ArrayAttr({}));
+      mainCall.getProperties().setOperandSegmentSizes(
+          {static_cast<int>(mainArgs.size()), 0});
+
+      // For each result, emit extractor call.
+      auto nullTag = b.int_val(64, 0);
+      SmallVector<Value> results;
+      for (unsigned i = 0; i < numResults; ++i) {
+        auto flatFieldTy = packedST.getBody()[i];
+        auto clangFieldTy = buildClangStructType(ctx, flatFieldTy);
+        auto extrFuncType = LLVM::LLVMFunctionType::get(
+            clangFieldTy, {ptrTy, ptrTy});
+
+        auto extrFuncOp = appendOrGetExternFuncOp(
+            rewriter, op, extractorNames[i], extrFuncType, "", op.getLibpath());
+
+        Value nullTagPtr = b.inttoptr(ptrTy, nullTag);
+        SmallVector<Value> extrArgs = {nullTagPtr, mainRET.getResult()};
+        auto extrCall = LLVM::CallOp::create(rewriter, loc, extrFuncOp, extrArgs);
+        extrCall.getProperties().setOpBundleSizes(
+            rewriter.getDenseI32ArrayAttr({}));
+        extrCall.getProperties().setOperandSegmentSizes(
+            {static_cast<int>(extrArgs.size()), 0});
+
+        auto flat = convertClangToFlat(
+            loc, rewriter, extrCall.getResult(), flatFieldTy);
+        results.push_back(flat);
+      }
+
+      rewriter.replaceOp(op, results);
+      return success();
+    }
+
+    // Non-tuple path (existing logic).
     Type clangReturnType;
     if (packedResult) {
       if (numResults < 2) {
@@ -175,15 +261,10 @@ struct ExternCallOpConversion
     if (numResults != 0) {
       Value clangResult = callOp.getResult();
       if (numResults < 2) {
-        // Single tensor result: convert { [N x elemTy] } → { elemTy x N }
         auto flat = convertClangToFlat(loc, rewriter, clangResult,
                                        packedResult);
         results.push_back(flat);
       } else {
-        // Multiple tensor results: packedResult is
-        // { flat0, flat1, ... } and clangResult is
-        // { clang0, clang1, ... }. Extract each clang field
-        // and convert to flat.
         auto packedST = cast<LLVM::LLVMStructType>(packedResult);
         for (unsigned i = 0; i < packedST.getBody().size(); ++i) {
           auto clangField = LLVM::ExtractValueOp::create(

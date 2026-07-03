@@ -126,6 +126,7 @@ TypeBuilder::TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S)
       ShapeTemplateType(getTemplateDecl(Ctx, "Shape")),
       LayoutFactoryTemplateType(getTemplateDecl(Ctx, "TensorLayout")),
       IntTupleTemplateType(getTemplateDecl(Ctx, "IntTuple")),
+      IntsTemplateType(getTemplateDecl(Ctx, "Ints")),
       TensorTemplateType(getTemplateDecl(Ctx, "Tensor")) {}
 
 clang::TemplateArgument TypeBuilder::mkIntegralArgUint32(uint32_t V) {
@@ -297,6 +298,23 @@ clang::QualType TypeBuilder::BuildLayout(
       specArgs->asArray(), Ctx.getCanonicalTagType(Spec));
 }
 
+clang::QualType TypeBuilder::BuildInts(uint32_t N) {
+  auto TypeArg = mkIntegralArgUint32(N);
+  auto SL = IntsTemplateType->getLocation();
+  void *ins = nullptr;
+  clang::ClassTemplateSpecializationDecl *S;
+  if (!(S = IntsTemplateType->findSpecialization({TypeArg}, ins))) {
+    S = clang::ClassTemplateSpecializationDecl::Create(
+        Ctx, clang::TagTypeKind::Struct, Ctx.getTranslationUnitDecl(),
+        SL, SL, IntsTemplateType, {TypeArg}, false, nullptr);
+    IntsTemplateType->AddSpecialization(S, ins);
+  }
+  return Ctx.getTemplateSpecializationType(
+      clang::ElaboratedTypeKeyword::None,
+      clang::TemplateName(IntsTemplateType), TypeArg, TypeArg,
+      Ctx.getCanonicalTagType(S));
+}
+
 clang::QualType
 TypeBuilder::BuildTensor(clang::QualType ElementType,
                          clang::QualType ShapeType,
@@ -416,7 +434,17 @@ TensorParameter TypeInspector::ParseTensorType(
   return tp;
 }
 
-std::variant<std::nullptr_t, TensorParameter>
+TupleType TypeInspector::ParseTupleType(
+    clang::ClassTemplateSpecializationDecl *type) {
+  auto TypePacks = type->getTemplateArgs().get(0).getPackAsArray();
+  TupleType Result;
+  for (size_t I = 0; I < TypePacks.size(); I++)
+    Result.Types.emplace_back(
+        DispatchTypeParsing(TypePacks[I].getAsType()));
+  return Result;
+}
+
+std::variant<std::nullptr_t, TensorParameter, TupleType>
 TypeInspector::DispatchTypeParsing(clang::QualType type) {
   if (auto *RecordDecl = type->getAsRecordDecl()) {
     if (auto *ClassSpecDecl =
@@ -425,6 +453,13 @@ TypeInspector::DispatchTypeParsing(clang::QualType type) {
       if (ClassSpecDecl->getSpecializedTemplate() ==
           TensorTemplateType)
         return ParseTensorType(ClassSpecDecl);
+      if (ClassSpecDecl->getSpecializedTemplate()
+              ->getNameAsString() == "tuple") {
+        auto *TP = ClassSpecDecl->getSpecializedTemplate()
+                       ->getTemplateParameters();
+        if (TP->size() == 1 && TP->getParam(0)->isParameterPack())
+          return ParseTupleType(ClassSpecDecl);
+      }
     }
   }
   return nullptr;
@@ -693,6 +728,16 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
   return Result;
 }
 
+clang::QualType CUDACompiler::BuildInts(uint32_t N) {
+  clang::QualType Result;
+  TaskQueue.emplace([&](TensorTypeHelpers &helper,
+                        CustomAstConsumer &) {
+    Result = helper.Builder.BuildInts(N);
+  });
+  InvocationContext->SwitchTo(*CompileExecutionContext);
+  return Result;
+}
+
 clang::FunctionDecl *CUDACompiler::LookupFunction(
     const llvm::StringRef &Name,
     const llvm::ArrayRef<clang::QualType> &Args) {
@@ -722,10 +767,11 @@ CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
   return Result;
 }
 
-std::variant<std::nullptr_t, TensorParameter>
+std::variant<std::nullptr_t, TensorParameter, TupleType>
 CUDACompiler::EvaluateFunctionReturnType(
     clang::FunctionDecl *FD) {
-  std::variant<std::nullptr_t, TensorParameter> Result = nullptr;
+  std::variant<std::nullptr_t, TensorParameter, TupleType> Result =
+      nullptr;
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
                         CustomAstConsumer &) {
     Result = helper.Inspector.DispatchTypeParsing(
@@ -920,13 +966,10 @@ std::string tritonPatchExternCallResultTypes(
     std::vector<uint32_t> warpBasis;
     uint32_t nWarps;
   };
-  llvm::StringMap<InferredType> inferredMap;
+  llvm::StringMap<std::vector<InferredType>> inferredMap;
 
-  for (auto &kv : *jsonObj) {
-    auto *obj = kv.second.getAsObject();
-    if (!obj)
-      continue;
-
+  auto parseObj = [](llvm::json::Object *obj) -> std::optional<InferredType> {
+    if (!obj) return std::nullopt;
     InferredType info;
     if (auto s = obj->getString("scalar"))
       info.scalar = s->str();
@@ -952,8 +995,19 @@ std::string tritonPatchExternCallResultTypes(
           info.warpBasis.push_back(static_cast<uint32_t>(*i));
     if (auto n = obj->getInteger("n_warps"))
       info.nWarps = static_cast<uint32_t>(*n);
+    return info;
+  };
 
-    inferredMap[kv.first] = std::move(info);
+  for (auto &kv : *jsonObj) {
+    if (auto *arr = kv.second.getAsArray()) {
+      for (auto &elem : *arr) {
+        if (auto info = parseObj(elem.getAsObject()))
+          inferredMap[kv.first].push_back(std::move(*info));
+      }
+    } else if (auto *obj = kv.second.getAsObject()) {
+      if (auto info = parseObj(obj))
+        inferredMap[kv.first].push_back(std::move(*info));
+    }
   }
 
   if (inferredMap.empty())
@@ -1018,26 +1072,44 @@ std::string tritonPatchExternCallResultTypes(
     if (it == inferredMap.end())
       continue;
 
-    auto &info = it->second;
-    auto declaredType =
-        mlir::cast<RankedTensorType>(op.getResult(0).getType());
+    auto &infos = it->second;
+    unsigned numResults = op.getNumResults();
+    if (infos.size() != numResults)
+      return "gl.call: result count mismatch for '" + symbol +
+             "': CUDA returns " + std::to_string(infos.size()) +
+             " tensors but " + std::to_string(numResults) +
+             " declared";
 
-    auto elemTy = getElemType(info.scalar);
-    auto declaredElemTy = declaredType.getElementType();
-    auto declaredShape = declaredType.getShape();
+    // Validate all result types first
+    SmallVector<Type> newResultTypes;
+    bool needsPatch = false;
+    for (unsigned i = 0; i < numResults; i++) {
+      auto &info = infos[i];
+      auto declaredType =
+          mlir::cast<RankedTensorType>(op.getResult(i).getType());
+      auto elemTy = getElemType(info.scalar);
+      auto declaredElemTy = declaredType.getElementType();
+      auto declaredShape = declaredType.getShape();
 
-    if (elemTy != declaredElemTy)
-      return "gl.call: return dtype mismatch for '" + symbol +
-             "': CUDA returns " + info.scalar +
-             " but declared type has different element type";
+      if (elemTy != declaredElemTy)
+        return "gl.call: return dtype mismatch for '" + symbol +
+               "': CUDA returns " + info.scalar +
+               " but declared result " + std::to_string(i) +
+               " has different element type";
 
-    auto shapeRef = llvm::ArrayRef<int64_t>(info.shape);
-    if (shapeRef != declaredShape)
-      return "gl.call: return shape mismatch for '" + symbol +
-             "': CUDA returns different shape than declared";
+      auto shapeRef = llvm::ArrayRef<int64_t>(info.shape);
+      if (shapeRef != declaredShape)
+        return "gl.call: return shape mismatch for '" + symbol +
+               "': CUDA returns different shape than declared for "
+               "result " + std::to_string(i);
 
-    auto inferredType = buildEncodedType(info, elemTy);
-    if (inferredType == declaredType)
+      auto inferredType = buildEncodedType(info, elemTy);
+      if (inferredType != declaredType)
+        needsPatch = true;
+      newResultTypes.push_back(inferredType);
+    }
+
+    if (!needsPatch)
       continue;
 
     if (op.getAssertNoConv())
@@ -1047,11 +1119,22 @@ std::string tritonPatchExternCallResultTypes(
     OpBuilder builder(op);
     ImplicitLocOpBuilder ib(op.getLoc(), builder);
     auto newOp = triton::gpu::ExternCallOp::create(
-        ib, mlir::TypeRange{inferredType}, op.getInputs(),
+        ib, newResultTypes, op.getInputs(),
         op.getSymbol(), op.getLibpath(), op.getAssertNoConv());
-    auto convert = triton::gpu::ConvertLayoutOp::create(
-        ib, declaredType, newOp.getResult(0));
-    op.getResult(0).replaceAllUsesExcept(convert.getResult(), convert);
+
+    for (unsigned i = 0; i < numResults; i++) {
+      auto declaredType =
+          mlir::cast<RankedTensorType>(op.getResult(i).getType());
+      auto inferredType =
+          mlir::cast<RankedTensorType>(newOp.getResult(i).getType());
+      if (inferredType == declaredType) {
+        op.getResult(i).replaceAllUsesWith(newOp.getResult(i));
+      } else {
+        auto convert = triton::gpu::ConvertLayoutOp::create(
+            ib, declaredType, newOp.getResult(i));
+        op.getResult(i).replaceAllUsesExcept(convert.getResult(), convert);
+      }
+    }
     op.erase();
   }
 
@@ -1082,7 +1165,8 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
   compiler.PerformParse(ctx, "cudamod");
 
   std::vector<clang::FunctionDecl *> resolvedFDs;
-  std::vector<std::optional<TensorParameter>> returnTypes;
+  std::vector<std::vector<TensorParameter>> returnTypes;
+  std::vector<std::vector<clang::FunctionDecl *>> extractorFDs;
 
   // Phase 1: Type inference for all calls
   for (auto &req : requests) {
@@ -1100,7 +1184,7 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
             [&, st](TensorTypeHelpers &helper,
                     CustomAstConsumer &) {
               Result = getQualTypeFromScalarType(helper.Builder.Ctx,
-                                                 *st);
+                                                  *st);
             });
         compiler.InvocationContext->SwitchTo(
             *compiler.CompileExecutionContext);
@@ -1114,12 +1198,36 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
       return {"", "Function lookup failed: " + req.Symbol, {}};
 
     auto ret = compiler.EvaluateFunctionReturnType(FD);
-    std::optional<TensorParameter> retParam;
-    if (auto *tp = std::get_if<TensorParameter>(&ret))
-      retParam = std::move(*tp);
+    std::vector<TensorParameter> retParams;
+    if (auto *tp = std::get_if<TensorParameter>(&ret)) {
+      retParams.push_back(std::move(*tp));
+    } else if (auto *tt = std::get_if<TupleType>(&ret)) {
+      for (auto &elem : tt->Types) {
+        if (auto *tp = std::get_if<TensorParameter>(&elem))
+          retParams.push_back(std::move(*tp));
+      }
+    }
 
-    resolvedFDs.push_back(FD);
-    returnTypes.push_back(std::move(retParam));
+  resolvedFDs.push_back(FD);
+  auto numReturnParams = retParams.size();
+  returnTypes.push_back(std::move(retParams));
+
+  std::vector<clang::FunctionDecl *> extrFDs;
+  if (numReturnParams > 1) {
+      auto tupleRetType = FD->getCallResultType().getCanonicalType();
+      for (unsigned ei = 0; ei < numReturnParams; ei++) {
+        auto intsQualType = compiler.BuildInts(ei);
+        auto *extrFD = compiler.LookupFunction(
+            "get_tuple_elem", {intsQualType, tupleRetType});
+        if (!extrFD)
+          return {"",
+                  "extractor lookup failed for '" + req.Symbol +
+                      "' result " + std::to_string(ei),
+                  {}};
+        extrFDs.push_back(extrFD);
+      }
+    }
+    extractorFDs.push_back(std::move(extrFDs));
   }
 
   // Phase 2: Codegen for all resolved functions
@@ -1139,7 +1247,18 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
     CudaFuncResult r;
     r.Symbol = requests[i].Symbol;
     r.MangledName = fn->getName().str();
-    r.ReturnType = std::move(returnTypes[i]);
+    r.ReturnTypes = std::move(returnTypes[i]);
+
+    for (auto *extrFD : extractorFDs[i]) {
+      auto *extrFn = compiler.InstantiationFunction(extrFD);
+      if (!extrFn)
+        return {"",
+                "extractor instantiation failed for '" +
+                    requests[i].Symbol + "'",
+                {}};
+      r.ExtractorMangledNames.push_back(extrFn->getName().str());
+    }
+
     results.push_back(std::move(r));
   }
 
@@ -1224,6 +1343,7 @@ void linkBitcodeToModule(llvm::Module *dstMod,
         auto *ret = llvm::dyn_cast<llvm::ReturnInst>(&I);
         if (!ret || !ret->getReturnValue())
           continue;
+
         auto *retVal = ret->getReturnValue();
         auto *retTy = retVal->getType();
         auto *funcRetTy = dstFn->getReturnType();

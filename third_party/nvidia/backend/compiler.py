@@ -162,15 +162,15 @@ class CUDAOptions:
 
 
 def _serialize_return_types(return_type_map):
-    """Serialize TensorParameter return type map to JSON-compatible dicts."""
+    """Serialize return type map (symbol -> list of TensorParameter) to JSON dict."""
     scalar_names = {
         llvm.ScalarType.Fp32: "f32", llvm.ScalarType.Fp16: "f16",
         llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int32: "i32",
         llvm.ScalarType.Int64: "i64",
     }
     result = {}
-    for symbol, tp in return_type_map.items():
-        result[symbol] = {
+    for symbol, tp_list in return_type_map.items():
+        result[symbol] = [{
             "scalar": scalar_names.get(tp.type, "f32"),
             "shape": list(tp.shape),
             "layout_shape": list(tp.layout_shape),
@@ -178,7 +178,7 @@ def _serialize_return_types(return_type_map):
             "lane_basis": list(tp.lane_basis),
             "warp_basis": list(tp.warp_basis),
             "n_warps": tp.n_warps,
-        }
+        } for tp in tp_list]
     return result
 
 
@@ -438,6 +438,9 @@ class CUDABackend(BaseBackend):
         if has_extern_calls:
             mod.set_str_attr("ttg.extern_call_mangled_names",
                              _json.dumps(metadata["extern_call_mangled"]))
+            if metadata.get("extern_call_extractor_names"):
+                mod.set_str_attr("ttg.extern_call_extractor_names",
+                                 _json.dumps(metadata["extern_call_extractor_names"]))
 
         pm.run(mod, 'make_llir')
 
@@ -549,7 +552,8 @@ class CUDABackend(BaseBackend):
 
         compiled_bitcodes = []
         mangled_names = {}  # dict[original_symbol] = mangled_name
-        return_type_map = {}  # dict[original_symbol] = TensorParameter
+        return_type_map = {}  # dict[original_symbol] = list[TensorParameter]
+        extractor_names = {}  # dict[original_symbol] = list[str]
 
         for libpath, specs in by_libpath.items():
             with open(libpath) as f:
@@ -587,10 +591,12 @@ class CUDABackend(BaseBackend):
 
             compiled_bitcodes.append(list(bitcode))  # bytes → list of ints for JSON
 
-            for symbol, mangled, return_param in results:
+            for symbol, mangled, ret_types, extr_names in results:
                 mangled_names[symbol] = mangled
-                if return_param is not None:
-                    return_type_map[symbol] = return_param
+                if ret_types:
+                    return_type_map[symbol] = list(ret_types)
+                if extr_names:
+                    extractor_names[symbol] = list(extr_names)
 
         # Store inferred return types as module attribute for the
         # ExternCall lowering to use when building LLVM result types.
@@ -602,6 +608,7 @@ class CUDABackend(BaseBackend):
 
         metadata["extern_call_bitcodes"] = compiled_bitcodes
         metadata["extern_call_mangled"] = mangled_names
+        metadata["extern_call_extractor_names"] = extractor_names
         return True
 
 
