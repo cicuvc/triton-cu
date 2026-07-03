@@ -119,13 +119,15 @@ __device__ Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout> add_bias(const Ten
     return mat; // not implemented yet
 }
 
+using TArg = typename TensorLayout<Shape<32, 32>, 1>::Layout<{{0,1},{0,2},{0,4},{0,8},{0,16}},{{1,0},{2,0},{4,0},{8,0},{16,0}},{}>;
+using TRes = typename TensorLayout<Shape<32>, 1>::Layout<{},{{1},{2},{4},{8},{16}},{}>;
 
-using LA = TensorLayout<Shape<512>, 1>::Layout<{{1},{2},{4},{8}}, {{16},{32},{64},{128},{256}}, {}>;
 
-using TS = TensorLayout<Shape<512>, 1>;
-
-template<TS::BasisGroup<2> X>struct BB{};
-void fxaa(BB<{{1},{2}}>){}
-
-template
-__device__ Tensor<float, Shape<512>, LA> elementwise_add(const Tensor<float, Shape<512>, LA>& lhs, const Tensor<float, Shape<512>, LA>& rhs);
+template<typename T>
+__device__ Tensor<T, Shape<32>, TRes> reduce(const Tensor<T, Shape<32, 32>, TArg>& Vals){
+    Tensor<T, Shape<32>, TRes>  Result;
+    for(int i = 0; i < 32; i++){
+        Result.data[0] += Vals.data[i];
+    }
+    return Result;
+}

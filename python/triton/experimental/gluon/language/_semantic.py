@@ -15,6 +15,19 @@ def _check(cond: bool, msg_fn: Callable[[], str], category=ValueError):
         raise category(msg_fn())
 
 
+def _compute_result_shape(input_shape, result_layout):
+    """Compute the result tensor shape from the result layout and input shape.
+    SliceLayout removes the indexed dimension recursively."""
+    if isinstance(result_layout, SliceLayout):
+        parent_shape = _compute_result_shape(input_shape, result_layout.parent)
+        dim = result_layout.dim
+        return parent_shape[:dim] + parent_shape[dim + 1:]
+    if isinstance(result_layout, DistributedLinearLayout):
+        return result_layout.shape
+    # BlockedLayout and others: same shape as input
+    return input_shape
+
+
 def _is_int_list(value):
     return isinstance(value, Sequence) and all(isinstance(i, int) for i in value)
 
@@ -246,8 +259,9 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         first_input = args[0]
         result_types = []
         for lo in result_layouts:
+            result_shape = _compute_result_shape(first_input.shape, lo)
             result_types.append(
-                ttgl.distributed_type(first_input.dtype, first_input.shape, lo))
+                ttgl.distributed_type(first_input.dtype, result_shape, lo))
 
         result_ir_types = [rt.to_ir(self.builder) for rt in result_types]
         arg_handles = [a.handle for a in args]
