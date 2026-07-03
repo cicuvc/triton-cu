@@ -161,6 +161,27 @@ class CUDAOptions:
         return "iisan" in self.instrumentation_mode
 
 
+def _serialize_return_types(return_type_map):
+    """Serialize TensorParameter return type map to JSON-compatible dicts."""
+    scalar_names = {
+        llvm.ScalarType.Fp32: "f32", llvm.ScalarType.Fp16: "f16",
+        llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int32: "i32",
+        llvm.ScalarType.Int64: "i64",
+    }
+    result = {}
+    for symbol, tp in return_type_map.items():
+        result[symbol] = {
+            "scalar": scalar_names.get(tp.type, "f32"),
+            "shape": list(tp.shape),
+            "layout_shape": list(tp.layout_shape),
+            "reg_basis": list(tp.reg_basis),
+            "lane_basis": list(tp.lane_basis),
+            "warp_basis": list(tp.warp_basis),
+            "n_warps": tp.n_warps,
+        }
+    return result
+
+
 class CUDABackend(BaseBackend):
     instrumentation = None
 
@@ -528,16 +549,17 @@ class CUDABackend(BaseBackend):
 
         compiled_bitcodes = []
         mangled_names = {}  # dict[original_symbol] = mangled_name
+        return_type_map = {}  # dict[original_symbol] = TensorParameter
 
         for libpath, specs in by_libpath.items():
             with open(libpath) as f:
                 source = f.read()
 
-            instantiations = []
+            requests = []
             for spec_entry in specs:
                 symbol = spec_entry["symbol"]
-                inst = llvm.DeviceFunctionInstantiation()
-                inst.symbol = symbol
+                req = llvm.CudaFuncRequest()
+                req.symbol = symbol
 
                 param_types = []
                 for inp in spec_entry["inputs"]:
@@ -550,13 +572,13 @@ class CUDABackend(BaseBackend):
                     tp.warp_basis = inp.get("warp_bases", [])
                     tp.n_warps = inp.get("num_warps", 1)
                     param_types.append(tp)
-                inst.param_types = param_types
-                instantiations.append(inst)
+                req.param_types = param_types
+                requests.append(req)
 
             ok, bitcode, error, results = llvm.compile_cuda_to_module(
                 llvm_context, source, sm, resource_dir,
                 [cuda_inc, "/usr/local/cuda-13.1/targets/x86_64-linux/include"],
-                instantiations)
+                requests)
 
             if not ok:
                 raise RuntimeError(
@@ -564,8 +586,18 @@ class CUDABackend(BaseBackend):
 
             compiled_bitcodes.append(list(bitcode))  # bytes → list of ints for JSON
 
-            for symbol, mangled in results:
+            for symbol, mangled, return_param in results:
                 mangled_names[symbol] = mangled
+                if return_param is not None:
+                    return_type_map[symbol] = return_param
+
+        # Store inferred return types as module attribute for the
+        # ExternCall lowering to use when building LLVM result types.
+        if return_type_map:
+            error = llvm.patch_extern_call_result_types(
+                mod, _json.dumps(_serialize_return_types(return_type_map)))
+            if error:
+                raise RuntimeError(error)
 
         metadata["extern_call_bitcodes"] = compiled_bitcodes
         metadata["extern_call_mangled"] = mangled_names

@@ -956,17 +956,62 @@ void init_triton_llvm(py::module &&m) {
       .def(py::init<>())
       .def_readwrite("type", &TensorParameter::Type)
       .def_readwrite("shape", &TensorParameter::Shape)
-      .def_readwrite("layout_shape", &TensorParameter::LayoutShape)
-      .def_readwrite("reg_basis", &TensorParameter::RegBasis)
-      .def_readwrite("lane_basis", &TensorParameter::LaneBasis)
-      .def_readwrite("warp_basis", &TensorParameter::WarpBasis)
-      .def_readwrite("n_warps", &TensorParameter::N_WARPS);
+      .def_property(
+          "layout_shape",
+          [](TensorParameter &tp) -> std::vector<uint32_t> & {
+            return tp.Layout.LayoutShape;
+          },
+          [](TensorParameter &tp, std::vector<uint32_t> v) {
+            tp.Layout.LayoutShape = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "reg_basis",
+          [](TensorParameter &tp) -> std::vector<uint32_t> & {
+            return tp.Layout.RegBasis;
+          },
+          [](TensorParameter &tp, std::vector<uint32_t> v) {
+            tp.Layout.RegBasis = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "lane_basis",
+          [](TensorParameter &tp) -> std::vector<uint32_t> & {
+            return tp.Layout.LaneBasis;
+          },
+          [](TensorParameter &tp, std::vector<uint32_t> v) {
+            tp.Layout.LaneBasis = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "warp_basis",
+          [](TensorParameter &tp) -> std::vector<uint32_t> & {
+            return tp.Layout.WarpBasis;
+          },
+          [](TensorParameter &tp, std::vector<uint32_t> v) {
+            tp.Layout.WarpBasis = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "n_warps",
+          [](TensorParameter &tp) -> uint32_t & {
+            return tp.Layout.N_WARPS;
+          },
+          [](TensorParameter &tp, uint32_t v) {
+            tp.Layout.N_WARPS = v;
+          },
+          py::return_value_policy::reference_internal);
 
-  py::class_<DeviceFunctionInstantiation>(m, "DeviceFunctionInstantiation")
+  py::class_<CudaFuncRequest>(m, "CudaFuncRequest")
       .def(py::init<>())
-      .def_readwrite("symbol", &DeviceFunctionInstantiation::FunctionLookupName)
-      .def_readwrite("param_types",
-                     &DeviceFunctionInstantiation::ParamTypes);
+      .def_readwrite("symbol", &CudaFuncRequest::Symbol)
+      .def_readwrite("param_types", &CudaFuncRequest::ParamTypes);
+
+  py::class_<CudaFuncResult>(m, "CudaFuncResult")
+      .def(py::init<>())
+      .def_readonly("symbol", &CudaFuncResult::Symbol)
+      .def_readonly("mangled_name", &CudaFuncResult::MangledName)
+      .def_readonly("return_type", &CudaFuncResult::ReturnType);
 
   m.def("link_extern_libs", [](llvm::Module *dstMod,
                                const std::vector<std::string> &paths) {
@@ -1054,33 +1099,35 @@ void init_triton_llvm(py::module &&m) {
         },
         py::arg("dst_mod"), py::arg("src_mod"));
 
-  // In-process CUDA compilation: source + instantiations → bitcode.
-  // Returns (ok, bitcode, error, results) where results is [(symbol, mangled)].
+  // In-process CUDA compilation: source + requests → bitcode + results.
+  // Each result includes the inferred return type (TensorParameter or null).
   m.def("compile_cuda_to_module",
-        [](llvm::LLVMContext &ctx, const std::string &source,
-           const std::string &sm, const std::string &resourceDir,
-           const std::vector<std::string> &includePaths,
-           std::vector<DeviceFunctionInstantiation> &instantiations)
-            -> py::tuple {
-          auto [bitcode, error, results] =
-              tritonCompileCuda(ctx, source, sm, resourceDir, includePaths,
-                                instantiations);
-          if (error.empty()) {
-            py::list pyResults;
-            for (auto &r : results) {
-              pyResults.append(
-                  py::make_tuple(r.Symbol, r.MangledName));
-            }
-            return py::make_tuple(true, py::bytes(bitcode), py::str(""),
-                                  pyResults);
-          } else {
-            return py::make_tuple(false, py::none(), py::str(error),
-                                  py::list());
-          }
-        },
-        py::arg("ctx"), py::arg("source"), py::arg("sm"),
-        py::arg("resource_dir"), py::arg("include_paths"),
-        py::arg("instantiations"));
+         [](llvm::LLVMContext &ctx, const std::string &source,
+            const std::string &sm, const std::string &resourceDir,
+            const std::vector<std::string> &includePaths,
+            const std::vector<CudaFuncRequest> &requests) -> py::tuple {
+           auto [bitcode, error, results] =
+               tritonCompileCuda(ctx, source, sm, resourceDir, includePaths,
+                                 requests);
+           if (error.empty()) {
+             py::list pyResults;
+             for (auto &r : results) {
+               auto pyRetType = r.ReturnType.has_value()
+                                    ? py::cast(r.ReturnType.value())
+                                    : py::none();
+               pyResults.append(py::make_tuple(r.Symbol, r.MangledName,
+                                               pyRetType));
+             }
+             return py::make_tuple(true, py::bytes(bitcode), py::str(""),
+                                   pyResults);
+           } else {
+             return py::make_tuple(false, py::none(), py::str(error),
+                                   py::list());
+           }
+         },
+         py::arg("ctx"), py::arg("source"), py::arg("sm"),
+         py::arg("resource_dir"), py::arg("include_paths"),
+         py::arg("requests"));
 
   // Link compiled CUDA bitcode into a module (same LLVMContext).
   m.def("link_cuda_bitcode",
@@ -1088,7 +1135,15 @@ void init_triton_llvm(py::module &&m) {
            llvm::LLVMContext &ctx) {
           linkBitcodeToModule(dstMod, bitcode, ctx);
         },
-        py::arg("dst_mod"), py::arg("bitcode"), py::arg("ctx"));
+         py::arg("dst_mod"), py::arg("bitcode"), py::arg("ctx"));
+
+  // Patch extern_call op result types from CUDA-inferred return types.
+  m.def("patch_extern_call_result_types",
+        [](mlir::ModuleOp &mod, const std::string &jsonReturnTypes)
+            -> std::string {
+          return tritonPatchExternCallResultTypes(mod, jsonReturnTypes);
+        },
+        py::arg("mod"), py::arg("json_return_types"));
 }
 
 static void triton_stacktrace_signal_handler(void *) {

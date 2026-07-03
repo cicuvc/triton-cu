@@ -244,8 +244,6 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
 
         first_input = args[0]
-        # The extern_call op emits its result with the first input's layout.
-        # If the user-specified result_layout differs, insert convert_layout.
         result_types = []
         for lo in result_layouts:
             result_types.append(
@@ -254,17 +252,10 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         result_ir_types = [rt.to_ir(self.builder) for rt in result_types]
         arg_handles = [a.handle for a in args]
         result_handles = self.builder.create_extern_call(
-            str(src_path), func, arg_handles, result_ir_types)
+            str(src_path), func, arg_handles, result_ir_types,
+            assert_no_conv)
 
         results = [ttgl.tensor(h, rt) for h, rt in zip(result_handles, result_types)]
-        for i, (r, lo) in enumerate(zip(results, result_layouts)):
-            if lo == first_input.type.layout:
-                continue  # same layout, no conversion needed
-            if assert_no_conv:
-                raise ValueError(
-                    f"extern_call result[{i}] layout differs from input layout, "
-                    f"but assert_no_conv=True was specified")
-            results[i] = self.convert_layout(r, lo)
         return results[0] if len(results) == 1 else tuple(results)
 
     def convert_layout(self, value, layout, assert_trivial=False):

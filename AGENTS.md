@@ -44,10 +44,12 @@ In-process CUDA template instantiation via clang CodeGen at JIT time.
 Triton/Gluon kernel with gl.call()
   │
   ▼
-MLIR tt.call_external op (extern_elementwise)
+_core.py:call() → _semantic.py:call_extern()
+  Builds result_types from first_input.dtype/shape + user's result_layout
+  Creates ttg.extern_call MLIR op (symbol=func, libpath=src_path)
   │
-  ├──► _pre_compile_extern_calls() — before pm.run
-  │    extract_extern_call_specs() from MLIR ops
+  ├──► _pre_compile_extern_calls() — before pm.run (compiler.py:491)
+  │    extract_extern_call_specs() from MLIR ops → JSON (clang_compiler.cc:756)
   │    compile_cuda_to_module() — clang CompilerInvocation
   │      TensorTypeHelpers: instantiate template device functions
   │      CustomAstConsumer + CustomFEAction: CreateLLVMCodeGen
@@ -76,8 +78,12 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 | `python/src/clang_compiler.cc` / `.h` | CUDACompiler, TensorTypeHelpers, CustomAstConsumer, extractExternCallSpecs, compileCudaToModule, linkBitcodeToModule |
 | `python/src/llvm.cc` | Python bindings: ScalarType, TensorParameter, DeviceFunctionInstantiation, extract_extern_call_specs, compile_cuda_to_module, link_cuda_bitcode |
 | `python/src/ir.cc` | `set_str_attr` on Operation/ModuleOp |
+| `python/src/gluon_ir.cc` | GluonOpBuilder: `create_extern_call`, `to_linear_layout`, `layoutToGluon` |
 | `lib/Conversion/TritonGPUToLLVM/ExternCallOpToLLVM.cpp` | `{[N x scalar]}` return type lowering, by-pointer arg convention |
 | `third_party/nvidia/backend/compiler.py` | `_pre_compile_extern_calls()`, bitcode linking in `make_llir()` |
+| `python/triton/experimental/gluon/language/_core.py` | `gl.call()` user-facing API (line 774) |
+| `python/triton/experimental/gluon/language/_semantic.py` | `call_extern()` — builds result IR types from first arg (line 237-268) |
+| `python/triton/experimental/gluon/language/_layouts.py` | DistributedLayout, BlockedLayout, DistributedLinearLayout Python types |
 | `tt_plugin.cu` | CUDA C++ device library (Shape, TensorLayout, Layout, Tensor templates) |
 | `CMakeLists.txt` | Permanent Clang lib linkage, `-fno-rtti` for clang_compiler.cc, LLVMMIRParser |
 
@@ -86,6 +92,48 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 - **Ret-type fix**: named `%struct.Tensor` from clone has different `Type*` than literal `{[16 x float]}` even in same LLVMContext. alloca+store+load launders the type.
 - **Callee remapping**: intrinsic declarations (e.g. `llvm.lifetime.start`) are not auto-created in dstMod; must explicitly `Function::Create` them.
 - **No wrappers**: C++ references become `ptr` params in LLVM IR. Lowering uses alloca+store+ptr matching clang's convention.
+
+### Current Limitation: Return Type Layout
+`_semantic.py:246-252` infers `gl.call()` return layout entirely from `first_input.dtype` + `first_input.shape` — the user must manually supply the correct `result_layout=`. This is wrong for functions where the return type's element type, shape, or layout differs from the first argument (e.g., `add_bias` in `tt_plugin.cu:117` narrows the bias tensor shape to `[1, TILE_COLS]`).
+
+## Return Type Inference (in-progress)
+Goal: perform proper C++ overload resolution + template argument deduction + return type inspection in clang Sema to determine `gl.call()` return layout automatically.
+
+### Reference Implementation
+**`/home/cicuvc/cs/project/nks/lab/cu_compiler_v2.cpp` / `.h`** — standalone proof-of-concept with the full inference pipeline. Key abstractions to integrate:
+
+| Abstraction | What it provides |
+|-------------|-----------------|
+| `TypeBuilder` | `TensorParameter` user data → clang AST types (Shape, Layout, Tensor) |
+| `TypeInspector` | Reverse: clang AST `Tensor<T,S,L>` → `TensorParameter` (scalar type, shape dims, layout bases) |
+| `FunctionResolver` | `LookupFunction()` with proper Sema `DeduceTemplateArguments` + `getMoreSpecializedTemplate` overload resolution |
+| `CUDACompiler::EvaluateFunctionReturnType()` | Calls `TypeInspector::DispatchTypeParsing(FD->getCallResultType())` to get the actual return `TensorParameter` |
+
+### Integration Plan
+1. **Add `TypeInspector`** to `clang_compiler.cc` — parse clang `ClassTemplateSpecializationDecl` back to `TensorParameter` (scalar type, shape dims, layout bases, N_WARPS).
+2. **Separate `FunctionResolver`** from `TensorTypeHelpers::InstantiateFunction()` — currently it does lookup + instantiation inline; split so we can evaluate the return type *after* resolution but before codegen.
+3. **Call `EvaluateFunctionReturnType()`** in `CustomAstConsumer::HandleTranslationUnit()` after `InstantiateFunction()` and store the result on the instantiation struct.
+4. **Plumb return `TensorParameter` back** through the Python bindings (`compile_cuda_to_module` result tuple) so `_pre_compile_extern_calls()` can use it.
+5. **Replace** `_semantic.py:246-252` with the inferred return layout instead of inferring from `first_input`.
+6. **Convert** inferred `TensorParameter` (shape + bases) back to Triton's `DistributedLayout` via the `layoutToGluon` / `toLinearLayout` reverse path for constructing `result_layout` automatically.
+
+### Layout Round-Trip (MLIR ↔ clang AST)
+```
+MLIR encoding (ttg.extern_call input operands)
+  │  extractExternCallSpecs() — toLinearLayout(shape, encoding)
+  ▼
+TensorParameter {ScalarType, Shape, RegBasis, LaneBasis, WarpBasis, N_WARPS}
+  │  CustomAstConsumer — BuildLayoutFactory → BuildBasisGroup → BuildLayout → BuildTensor
+  ▼
+clang AST: Tensor<{scalar}, Shape<dims...>, Layout<REGS, LANES, WARPS>>
+  │  FunctionResolver::LookupFunction + Sema template deduction
+  ▼
+clang FunctionDecl (resolved + instantiated)
+  │  EvaluateFunctionReturnType → TypeInspector::DispatchTypeParsing
+  ▼
+TensorParameter (return type) → needs conversion back to MLIR/DistributedLayout
+  └── layoutToGluon() + toLinearLayout reverse path
+```
 
 ## Key C++ Source Locations
 | Purpose | Path |
@@ -103,6 +151,10 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 | Language core (builtins) | `python/triton/language/core.py` |
 | Code generator (AST→IR) | `python/triton/compiler/code_generator.py` |
 | Top-level compiler orchestration | `python/triton/compiler/compiler.py` |
+| Gluon Python API | `python/triton/experimental/gluon/language/_core.py` (gl.call), `_semantic.py` (call_extern), `_layouts.py` (DistributedLayout etc.) |
+| Gluon runtime (cache key) | `python/triton/experimental/gluon/_runtime.py` (scans for gl.call patterns, adds .cu path to cache key) |
+| layoutToGluon reverse path | `python/src/gluon_ir.cc:191-280` (MLIR encoding → Python DistributedLayout) |
+| LinearLayout↔Encoding conversion | `lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp` (toLinearLayout, combineCtaCgaWithShape) |
 
 ## Reproducing Compiler Crashes
 Compiler crashes sometimes print an MLIR reproducer. Save the full MLIR + `{-# ... #-}` metadata to `/tmp/<file>.mlir`, then run:
