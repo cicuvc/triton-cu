@@ -16,6 +16,7 @@
 #include <llvm/ADT/APSInt.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/IR/DebugInfo.h>
+#include <llvm/IR/Operator.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Linker/Linker.h>
@@ -636,14 +637,6 @@ CUDACompiler::CUDACompiler(
     CGOpts.RelocationModel = llvm::Reloc::Static;
     CGOpts.VectorizeSLP = true;
     CGOpts.OptimizationLevel = OptLevel;
-
-    auto &L = inv->getLangOpts();
-    L.AllowFPReassoc = true;
-    L.NoHonorNaNs = true;
-    L.NoHonorInfs = true;
-    L.NoSignedZero = true;
-    L.AllowRecip = true;
-    L.ApproxFunc = true;
   } while (0);
   CI = std::make_unique<clang::CompilerInstance>(std::move(inv));
   CI->createDiagnostics();
@@ -724,6 +717,10 @@ CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
     AstC.CodeGen->HandleTopLevelDecl(clang::DeclGroupRef(FD));
     Result = llvm::cast<llvm::Function>(
         AstC.CodeGen->GetAddrOfGlobal(FD, true));
+    for (auto &BB : *Result)
+      for (auto &I : BB)
+        if (isa<llvm::FPMathOperator>(I))
+          I.setFast(true);
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;
