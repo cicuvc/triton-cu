@@ -126,6 +126,8 @@ using TRes = typename TensorLayout<Shape<32>, 1>::Layout<{},{{1},{2},{4},{8},{16
 template<typename T>
 __device__ Tensor<T, Shape<32>, TRes> reduce(const Tensor<T, Shape<32, 32>, TArg>& Vals){
     Tensor<T, Shape<32>, TRes>  Result;
+    Result.data[0] = T{};
+    #pragma unroll
     for(int i = 0; i < 32; i++){
         Result.data[0] += Vals.data[i];
     }

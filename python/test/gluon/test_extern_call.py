@@ -15,8 +15,8 @@ def elementwise_add_kernel(x_ptr, y_ptr, out_ptr):
     idx = gl.arange(0, 512, layout=layout)
     x_vals = gl.load(x_ptr + idx)
     y_vals = gl.load(y_ptr + idx)
-    out_vals = gl.call("tt_plugin.cu", "elementwise_add", x_vals, y_vals,
-                        result_layout=layout)
+    out_vals = gl.call("python/test/gluon/tt_plugin.cu", "elementwise_add",
+                        x_vals, y_vals, result_layout=layout)
     gl.store(out_ptr + idx, out_vals)
 
 
@@ -25,7 +25,8 @@ def sibling_shuffle_kernel(x_ptr, out_ptr):
     layout: gl.constexpr = gl.BlockedLayout([2], [32], [1], [0])
     idx = gl.arange(0, 64, layout=layout)
     x_vals = gl.load(x_ptr + idx)
-    out_vals = gl.call("tt_plugin.cu", "intra_warp_add_sibling", x_vals,
+    out_vals = gl.call("python/test/gluon/tt_plugin.cu",
+                        "intra_warp_add_sibling", x_vals,
                         result_layout=layout)
     gl.store(out_ptr + idx, out_vals)
 
@@ -37,7 +38,7 @@ def reduce_kernel(x_ptr, out_ptr):
         + 32 * gl.arange(0, 32, layout=gl.SliceLayout(1, layout))[:, None]
     x_vals = gl.load(x_ptr + idx)
     out_idx = gl.arange(0, 32, layout=gl.SliceLayout(1, layout))
-    red_vals = gl.call("tt_plugin.cu", "reduce", x_vals,
+    red_vals = gl.call("python/test/gluon/tt_plugin.cu", "reduce", x_vals,
                         result_layout=gl.SliceLayout(1, layout))
     gl.store(out_ptr + out_idx, red_vals)
 
