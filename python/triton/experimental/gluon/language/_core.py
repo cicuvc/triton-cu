@@ -772,7 +772,7 @@ def dot_fma(a, b, acc, _semantic=None):
 
 
 @builtin
-def call(src_path, func, *args, result_layout, assert_no_conv=False, _semantic=None):
+def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_math=False, _semantic=None):
     """
     Call a ``__device__`` function from an external CUDA C++ source file.
 
@@ -783,12 +783,14 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, _semantic=N
         result_layout: Layout for the result tensor.
         assert_no_conv: If True, raise an error if a convert_layout is needed
             between the extern_call's result layout and the user's result_layout.
+        use_fast_math: If True, enable fast-math flags on the LLVM function.
     """
     from pathlib import Path
     src_path = _unwrap_if_constexpr(src_path)
     func = _unwrap_if_constexpr(func)
     result_layout = _unwrap_if_constexpr(result_layout)
     assert_no_conv = _unwrap_if_constexpr(assert_no_conv)
+    use_fast_math = _unwrap_if_constexpr(use_fast_math)
 
     src_path = Path(src_path)
     if not src_path.is_absolute():
@@ -800,4 +802,5 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, _semantic=N
     tensors = [_semantic.to_tensor(a) for a in args]
     return _semantic.call_extern(str(src_path), func, tensors,
                                  result_layouts=[result_layout],
-                                 assert_no_conv=assert_no_conv)
+                                 assert_no_conv=assert_no_conv,
+                                 use_fast_math=use_fast_math)

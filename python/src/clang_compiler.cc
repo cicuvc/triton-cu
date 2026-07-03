@@ -717,10 +717,6 @@ CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
     AstC.CodeGen->HandleTopLevelDecl(clang::DeclGroupRef(FD));
     Result = llvm::cast<llvm::Function>(
         AstC.CodeGen->GetAddrOfGlobal(FD, true));
-    for (auto &BB : *Result)
-      for (auto &I : BB)
-        if (isa<llvm::FPMathOperator>(I))
-          I.setFast(true);
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;
@@ -769,6 +765,7 @@ struct SpecInput {
 struct ExternCallSpec {
   std::string symbol;
   std::string libpath;
+  bool useFastMath = false;
   llvm::SmallVector<SpecInput, 4> inputs;
 };
 
@@ -788,6 +785,7 @@ extractExternCallSpecs(mlir::ModuleOp module) {
     ExternCallSpec spec;
     spec.symbol = op.getSymbol().str();
     spec.libpath = op.getLibpath().str();
+    spec.useFastMath = op.getUseFastMath();
 
     for (auto operand : op.getInputs()) {
       auto tensorTy = cast<RankedTensorType>(operand.getType());
@@ -862,6 +860,7 @@ tritonExtractExternCallSpecs(mlir::ModuleOp module) {
     os << "{";
     os << "\"symbol\": \"" << spec.symbol << "\", ";
     os << "\"libpath\": \"" << spec.libpath << "\", ";
+    os << "\"use_fast_math\": " << (spec.useFastMath ? "true" : "false") << ", ";
     os << "\"inputs\": [";
     bool firstInput = true;
     for (auto &input : spec.inputs) {
@@ -1068,6 +1067,17 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
   std::vector<CudaFuncResult> results;
   InitializeNVPTXBackend();
 
+  // Check for conflicting use_fast_math hints on the same symbol.
+  llvm::StringMap<bool> fastMathMap;
+  for (auto &req : requests) {
+    auto it = fastMathMap.find(req.Symbol);
+    if (it != fastMathMap.end() && it->second != req.UseFastMath)
+      return {"",
+              "conflicting use_fast_math hints for '" + req.Symbol + "'",
+              {}};
+    fastMathMap[req.Symbol] = req.UseFastMath;
+  }
+
   CUDACompiler compiler(source, 3, sm, resourceDir, includePaths);
   compiler.PerformParse(ctx, "cudamod");
 
@@ -1118,6 +1128,13 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
     if (!fn)
       return {"", "Instantiation failed for " + requests[i].Symbol,
               {}};
+
+    if (requests[i].UseFastMath) {
+      for (auto &BB : *fn)
+        for (auto &I : BB)
+          if (isa<llvm::FPMathOperator>(I))
+            I.setFast(true);
+    }
 
     CudaFuncResult r;
     r.Symbol = requests[i].Symbol;

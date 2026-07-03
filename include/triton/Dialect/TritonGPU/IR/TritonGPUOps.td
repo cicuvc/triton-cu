@@ -803,7 +803,8 @@ def TTG_ExternCallOp : TTG_Op<"extern_call", [
     Variadic<TT_Tensor>:$inputs,
     StrAttr:$symbol,
     StrAttr:$libpath,
-    UnitAttr:$assert_no_conv
+    UnitAttr:$assert_no_conv,
+    UnitAttr:$use_fast_math
   );
   let results = (outs Variadic<TT_Tensor>:$results);
 

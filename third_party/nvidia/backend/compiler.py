@@ -560,6 +560,7 @@ class CUDABackend(BaseBackend):
                 symbol = spec_entry["symbol"]
                 req = llvm.CudaFuncRequest()
                 req.symbol = symbol
+                req.use_fast_math = spec_entry.get("use_fast_math", False)
 
                 param_types = []
                 for inp in spec_entry["inputs"]:

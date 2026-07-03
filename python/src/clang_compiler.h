@@ -160,6 +160,7 @@ struct LayoutFactoryContext {
 struct CudaFuncRequest {
   std::string Symbol;
   std::vector<std::variant<ScalarType, TensorParameter>> ParamTypes;
+  bool UseFastMath = false;
 };
 
 struct CudaFuncResult {

@@ -247,7 +247,7 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             layout = AutoLayout()
         return self.splat(scalar, shape, layout)
 
-    def call_extern(self, src_path, func, args, result_layouts, assert_no_conv=False):
+    def call_extern(self, src_path, func, args, result_layouts, assert_no_conv=False, use_fast_math=False):
         _check(isinstance(src_path, str), lambda: f"expected 'src_path' to be a str but got {type(src_path)!r}")
         _check(isinstance(func, str), lambda: f"expected 'func' to be a str but got {type(func)!r}")
         for a in args:
@@ -267,7 +267,7 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         arg_handles = [a.handle for a in args]
         result_handles = self.builder.create_extern_call(
             str(src_path), func, arg_handles, result_ir_types,
-            assert_no_conv)
+            assert_no_conv, use_fast_math)
 
         results = [ttgl.tensor(h, rt) for h, rt in zip(result_handles, result_types)]
         return results[0] if len(results) == 1 else tuple(results)

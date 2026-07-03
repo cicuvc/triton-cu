@@ -1005,7 +1005,8 @@ void init_triton_llvm(py::module &&m) {
   py::class_<CudaFuncRequest>(m, "CudaFuncRequest")
       .def(py::init<>())
       .def_readwrite("symbol", &CudaFuncRequest::Symbol)
-      .def_readwrite("param_types", &CudaFuncRequest::ParamTypes);
+      .def_readwrite("param_types", &CudaFuncRequest::ParamTypes)
+      .def_readwrite("use_fast_math", &CudaFuncRequest::UseFastMath);
 
   py::class_<CudaFuncResult>(m, "CudaFuncResult")
       .def(py::init<>())

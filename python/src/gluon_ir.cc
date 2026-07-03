@@ -616,9 +616,10 @@ void init_gluon_ir(py::module &&m) {
             [](GluonOpBuilder &self, const std::string &libpath,
                const std::string &symbol, std::vector<Value> &args,
                std::vector<Type> &resultTypes,
-               bool assert_no_conv) -> std::vector<Value> {
+               bool assert_no_conv, bool use_fast_math) -> std::vector<Value> {
               auto op = self.create<ttg::ExternCallOp>(
-                  resultTypes, args, symbol, libpath, assert_no_conv);
+                  resultTypes, args, symbol, libpath, assert_no_conv,
+                  use_fast_math);
               return {op->result_begin(), op->result_end()};
             })
       .def("create_local_alloc",
