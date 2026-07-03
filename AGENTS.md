@@ -22,7 +22,7 @@ Remote: `git@github.com:cicuvc/triton-cu.git`
 - `make test-regression`, `make test-gluon`, `make test-proton`, `make test-interpret` — other suites.
 - Run lit: `cd $BUILD_DIR && ninja triton-opt && lit -v test/<path>.mlir`
 - Run single test: `pytest -s --tb=short python/test/unit/language/test_core.py::test_name`
-- **E2E test**: `python3 gluon_vectorized_add_test.py` (tests `gl.call` with in-process CUDA compilation).
+- **E2E test**: `pytest python/test/gluon/test_extern_call.py` (tests `gl.call` with in-process CUDA compilation).
 
 ## Compiler Pipeline (CUDABackend)
 The compiler lowering runs as an ordered dict of stage extensions, each a function `compile_ir(mod, metadata) -> mod`:
