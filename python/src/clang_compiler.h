@@ -347,6 +347,13 @@ struct CUDACompiler {
   // on an already-parsed compiler (Parse must have been called first).
   std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
   compileBitcode(const std::vector<CudaFuncRequest> &requests);
+
+  // D-01: Inference-only — runs type inference (Phase 1 of compileBitcode)
+  // on an already-parsed compiler without emitting LLVM bitcode.
+  // Returns per-request CudaFuncResult with ReturnTypes populated;
+  // MangledName/ExtractorMangledNames are empty (no codegen).
+  std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
+  inferReturnTypes(const std::vector<CudaFuncRequest> &requests);
 };
 
 // ============================================================

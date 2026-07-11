@@ -707,6 +707,34 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
                         CustomAstConsumer &) {
     auto Shape = helper.Builder.buildShape(Param.Shape);
+
+    // D-07: PlaceholderLayout detection — when all bases are empty and
+    // N_WARPS==0, probe with PlaceholderLayout instead of building a
+    // concrete Layout<REGS,LANES,WARPS>. Enables dtype+shape-only
+    // inference without requiring resolved reg/lane/warp bases.
+    if (Param.Layout.N_WARPS == 0 &&
+        Param.Layout.RegBasis.empty() &&
+        Param.Layout.LaneBasis.empty() &&
+        Param.Layout.WarpBasis.empty()) {
+      auto Lookup =
+          helper.Builder.Ctx.getTranslationUnitDecl()->lookup(
+              &helper.Builder.Ctx.Idents.get("PlaceholderLayout"));
+      if (!Lookup.empty()) {
+        auto *RD =
+            llvm::dyn_cast<clang::RecordDecl>(*Lookup.begin());
+        auto PlaceholderQualType =
+            helper.Builder.Ctx.getTypeDeclType(
+                static_cast<const clang::TypeDecl *>(RD));
+        Result = helper.Builder.BuildTensor(
+            getQualTypeFromScalarType(helper.Builder.Ctx,
+                                       Param.Type),
+            Shape.type, PlaceholderQualType);
+        return;
+      }
+      // PlaceholderLayout not in parsed source — fall through to
+      // existing concrete-layout code path.
+    }
+
     auto &LayoutInfo = Param.Layout;
     auto LayoutShape =
         helper.Builder.buildShape(LayoutInfo.LayoutShape);
@@ -801,6 +829,65 @@ std::unique_ptr<llvm::Module> CUDACompiler::EmitFinalModule() {
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;
+}
+
+// D-01: Inference-only — runs type inference (Phase 1 of compileBitcode)
+// on an already-parsed compiler without emitting LLVM bitcode.
+// Returns per-request CudaFuncResult with ReturnTypes populated;
+// MangledName/ExtractorMangledNames are empty (no codegen).
+std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
+CUDACompiler::inferReturnTypes(
+    const std::vector<CudaFuncRequest> &requests) {
+  std::vector<CudaFuncResult> results;
+
+  // Phase 1: Type inference only (no codegen, no emit)
+  for (auto &req : requests) {
+    llvm::SmallVector<clang::QualType, 4> argTypes(
+        req.ParamTypes.size());
+
+    for (size_t J = 0; J < req.ParamTypes.size(); J++) {
+      if (auto *tp =
+              std::get_if<TensorParameter>(&req.ParamTypes[J])) {
+        argTypes[J] = this->BuildTensor(*tp);
+      } else if (auto *st = std::get_if<ScalarType>(
+                     &req.ParamTypes[J])) {
+        clang::QualType Result;
+        this->TaskQueue.emplace(
+            [&, st](TensorTypeHelpers &helper,
+                    CustomAstConsumer &) {
+              Result = getQualTypeFromScalarType(helper.Builder.Ctx,
+                                                  *st);
+            });
+        this->InvocationContext->SwitchTo(
+            *this->CompileExecutionContext);
+        argTypes[J] = Result;
+      }
+    }
+
+    auto *FD =
+        this->LookupFunction(req.Symbol, argTypes);
+    if (!FD)
+      return {"", "Function lookup failed: " + req.Symbol, {}};
+
+    auto ret = this->EvaluateFunctionReturnType(FD);
+    std::vector<TensorParameter> retParams;
+    if (auto *tp = std::get_if<TensorParameter>(&ret)) {
+      retParams.push_back(std::move(*tp));
+    } else if (auto *tt = std::get_if<TupleType>(&ret)) {
+      for (auto &elem : tt->Types) {
+        if (auto *tp = std::get_if<TensorParameter>(&elem))
+          retParams.push_back(std::move(*tp));
+      }
+    }
+
+    // Build result without codegen — no MangledName, no extractors.
+    CudaFuncResult r;
+    r.Symbol = req.Symbol;
+    r.ReturnTypes = std::move(retParams);
+    results.push_back(std::move(r));
+  }
+
+  return {"", "", results};
 }
 
 // INFER-07: Split-path compile — runs inference+codegen+emit phases
