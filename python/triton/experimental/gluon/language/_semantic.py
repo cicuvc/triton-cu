@@ -262,12 +262,46 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             if hasattr(a, 'dtype') and str(a.dtype) in ("fp64", "f64", "float64"):
                 raise NotImplementedError(_f64_err)
 
-        first_input = args[0]
+        # Phase 2: Use CUDA-inferred dtype+shape for result type construction.
+        # The inference hook was registered by the CUDA backend via codegen_fns.
+        infer_hook = self.builder.codegen_fns.get("infer_extern_call_result")
+        if infer_hook is not None:
+            arg_params = []
+            for a in args:
+                arg_params.append({
+                    "dtype": str(a.dtype),
+                    "shape": list(a.shape),
+                    "layout": a.type.layout,
+                })
+            inferred_results = infer_hook.infer_result(
+                str(src_path), func, arg_params, use_fast_math)
+        else:
+            inferred_results = None
+
         result_types = []
-        for lo in result_layouts:
-            result_shape = _compute_result_shape(first_input.shape, lo)
+        for i, lo in enumerate(result_layouts):
+            if inferred_results is not None:
+                _check(i < len(inferred_results),
+                       lambda: f"gl.call(\"{func}\"): CUDA infers {len(inferred_results)} result(s) "
+                               f"but {len(result_layouts)} result_layout(s) declared")
+                scalar_name, result_shape = inferred_results[i]
+                _scalar_to_dtype = {
+                    "f32": ttgl.float32, "f16": ttgl.float16,
+                    "bf16": ttgl.bfloat16, "i32": ttgl.int32, "i64": ttgl.int64,
+                }
+                inferred_dtype = _scalar_to_dtype.get(scalar_name, ttgl.float32)
+            else:
+                _check(False,
+                       lambda: "gl.call() extern CUDA calls require the CUDA backend. "
+                               "The 'infer_extern_call_result' hook is not available in this backend.",
+                       category=RuntimeError)
             result_types.append(
-                ttgl.distributed_type(first_input.dtype, result_shape, lo))
+                ttgl.distributed_type(inferred_dtype, result_shape, lo))
+
+        if inferred_results is not None:
+            _check(len(inferred_results) == len(result_layouts),
+                   lambda: f"gl.call(\"{func}\"): CUDA infers {len(inferred_results)} result(s) "
+                           f"but {len(result_layouts)} result_layout(s) declared")
 
         result_ir_types = [rt.to_ir(self.builder) for rt in result_types]
         arg_handles = [a.handle for a in args]
