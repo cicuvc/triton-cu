@@ -1063,6 +1063,29 @@ void init_triton_llvm(py::module &&m) {
                                       py::str(error), py::list());
              }
            },
+           py::arg("requests"))
+      .def("infer",
+           [](CUDACompiler &compiler,
+              const std::vector<CudaFuncRequest> &requests) -> py::tuple {
+             auto [bitcode, error, results] =
+                 compiler.inferReturnTypes(requests);
+             if (error.empty()) {
+               py::list pyResults;
+               for (auto &r : results) {
+                 py::list pyRetTypes;
+                 for (auto &tp : r.ReturnTypes)
+                   pyRetTypes.append(py::cast(tp));
+                 pyResults.append(
+                     py::make_tuple(r.Symbol, py::str(""),
+                                     pyRetTypes, py::list()));
+               }
+               return py::make_tuple(true, py::bytes(bitcode),
+                                      py::str(""), pyResults);
+             } else {
+               return py::make_tuple(false, py::none(),
+                                      py::str(error), py::list());
+             }
+           },
            py::arg("requests"));
 
   m.def("link_extern_libs", [](llvm::Module *dstMod,
