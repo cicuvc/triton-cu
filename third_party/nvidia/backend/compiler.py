@@ -273,14 +273,25 @@ class InferExternCallResult:
             tp.type = _scalar_type_for(ap["dtype"])
             tp.shape = ap["shape"]
             tp.layout_shape = ap["shape"]
-            # PlaceholderLayout probe: empty bases, n_warps=0.
-            # The inference-only path uses these to build
-            # Tensor<T,Shape,PlaceholderLayout> args, which
-            # match any concrete Layout via implicit conversion.
-            tp.reg_basis = []
-            tp.lane_basis = []
-            tp.warp_basis = []
-            tp.n_warps = 0
+            # Compute minimally valid concrete bases for dtype+shape
+            # inference. The exact layout doesn't matter — we just need a
+            # valid Tensor<T,Shape,Layout<...>> type for template deduction.
+            # N_WARPS=1, all-zero bases produce a degenerate but valid layout.
+            rank = len(ap["shape"])
+            size = 1
+            for d in ap["shape"]:
+                size *= int(d)
+            n_warps = 1
+            # ffs(x) = bit_length of lowest set bit; equivalently (x & -x).bit_length()
+            _ffs_size_per_warp = (size // n_warps)
+            _lsb_bit = (_ffs_size_per_warp & -_ffs_size_per_warp).bit_length() if _ffs_size_per_warp > 0 else 0
+            n_lane_axes = 5
+            n_reg_axes = max(0, _lsb_bit - n_lane_axes - 1)
+            n_warp_axes = max(0, (n_warps & -n_warps).bit_length() - 1)
+            tp.reg_basis = [0] * (n_reg_axes * rank)
+            tp.lane_basis = [0] * (n_lane_axes * rank)
+            tp.warp_basis = [0] * (n_warp_axes * rank)
+            tp.n_warps = n_warps
             param_types.append(tp)
         req.param_types = param_types
 

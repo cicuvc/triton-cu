@@ -78,11 +78,15 @@ struct TensorLayout{
     };
 };
 
-struct PlaceholderLayout {};
+struct PlaceholderLayout {
+    static constexpr uint32_t REG_SIZE = 1;
+};
 
 template<typename T, typename TShape, typename TLayout>
 struct Tensor{
     T data[TLayout::REG_SIZE];
+
+    Tensor() = default;
 
     template<typename T2, typename TShape2>
     Tensor(const Tensor<T2, TShape2, PlaceholderLayout>& other) {

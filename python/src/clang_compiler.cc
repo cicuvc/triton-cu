@@ -323,7 +323,8 @@ clang::QualType TypeBuilder::BuildInts(uint32_t N) {
 clang::QualType
 TypeBuilder::BuildTensor(clang::QualType ElementType,
                          clang::QualType ShapeType,
-                         clang::QualType LayoutType) {
+                         clang::QualType LayoutType,
+                         bool instantiate) {
   auto SL = TensorTemplateType->getLocation();
   auto *args = clang::TemplateArgumentList::CreateCopy(
       Ctx, {mkTypeArg(ElementType), mkTypeArg(ShapeType),
@@ -331,14 +332,14 @@ TypeBuilder::BuildTensor(clang::QualType ElementType,
   void *ins = nullptr;
   clang::ClassTemplateSpecializationDecl *Spec;
   if (!(Spec = TensorTemplateType->findSpecialization(args->asArray(),
-                                                       ins))) {
+                                                        ins))) {
     Spec = clang::ClassTemplateSpecializationDecl::Create(
         Ctx, clang::TagTypeKind::Struct, Ctx.getTranslationUnitDecl(),
         SL, SL, TensorTemplateType, args->asArray(), false, nullptr);
     TensorTemplateType->AddSpecialization(Spec, ins);
   }
 
-  if (!Spec->hasDefinition())
+  if (instantiate && !Spec->hasDefinition())
     SemaRef.InstantiateClassTemplateSpecialization(
         SL, Spec, clang::TSK_ImplicitInstantiation, false, false);
   return Ctx.getTemplateSpecializationType(
@@ -728,7 +729,8 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
         Result = helper.Builder.BuildTensor(
             getQualTypeFromScalarType(helper.Builder.Ctx,
                                        Param.Type),
-            Shape.type, PlaceholderQualType);
+            Shape.type, PlaceholderQualType,
+            /*instantiate=*/false);
         return;
       }
       // PlaceholderLayout not in parsed source — fall through to

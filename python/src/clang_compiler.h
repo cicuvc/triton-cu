@@ -252,7 +252,8 @@ struct TypeBuilder {
                               clang::TemplateArgument aWarps);
   clang::QualType BuildTensor(clang::QualType ElementType,
                               clang::QualType ShapeType,
-                              clang::QualType LayoutType);
+                              clang::QualType LayoutType,
+                              bool instantiate = true);
 };
 
 // ============================================================

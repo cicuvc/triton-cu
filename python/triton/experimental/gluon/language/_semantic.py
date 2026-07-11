@@ -264,19 +264,23 @@ class GluonSemantic(TritonSemantic[TensorTy]):
 
         # Phase 2: Use CUDA-inferred dtype+shape for result type construction.
         # The inference hook was registered by the CUDA backend via codegen_fns.
+        # Try hook first; fall back to first_input-based inference on failure
+        # (e.g., for functions with fixed non-template layouts like reduce).
         infer_hook = self.builder.codegen_fns.get("infer_extern_call_result")
+        inferred_results = None
         if infer_hook is not None:
-            arg_params = []
-            for a in args:
-                arg_params.append({
-                    "dtype": str(a.dtype),
-                    "shape": list(a.shape),
-                    "layout": a.type.layout,
-                })
-            inferred_results = infer_hook.infer_result(
-                str(src_path), func, arg_params, use_fast_math)
-        else:
-            inferred_results = None
+            try:
+                arg_params = []
+                for a in args:
+                    arg_params.append({
+                        "dtype": str(a.dtype),
+                        "shape": list(a.shape),
+                        "layout": a.type.layout,
+                    })
+                inferred_results = infer_hook.infer_result(
+                    str(src_path), func, arg_params, use_fast_math)
+            except RuntimeError:
+                pass  # Fall back to first_input-based inference below
 
         result_types = []
         for i, lo in enumerate(result_layouts):
@@ -291,10 +295,12 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                 }
                 inferred_dtype = _scalar_to_dtype.get(scalar_name, ttgl.float32)
             else:
-                _check(False,
-                       lambda: "gl.call() extern CUDA calls require the CUDA backend. "
-                               "The 'infer_extern_call_result' hook is not available in this backend.",
-                       category=RuntimeError)
+                # Fallback: infer from first_input (Phase 1 behavior).
+                # Used when the hook fails (fixed-layout functions like reduce)
+                # or when the hook is absent (non-CUDA backends).
+                first_input = args[0]
+                inferred_dtype = first_input.dtype
+                result_shape = _compute_result_shape(first_input.shape, lo)
             result_types.append(
                 ttgl.distributed_type(inferred_dtype, result_shape, lo))
 
