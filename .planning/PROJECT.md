@@ -26,10 +26,13 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ **INFER-03**: Inference runs at IR-build (semantic) time so op result types stay type-consistent; fixed-layout functions (`reduce`) resolved via `LookupFunctionWithPlaceholderFallback`; hook-absent raises a clear error — Validated in Phase 2: Semantic-Time Inference
 - ✓ **INFER-04**: `result_layout=` remains the requested final layout; `convert_layout` reconciles CUDA-native → user layout — Validated in Phase 2: Semantic-Time Inference
 - ✓ **INFER-05**: Bundled bug fixes (dead code, `f64` coercion guard) — Validated in Phase 2: Semantic-Time Inference
+- ✓ **TEST-01**: New E2E test (`test_reduce_f16_f32`) exercising a shape-AND-dtype-changing extern call (f16→f32 `reduce_f16`), supplying only `result_layout` — GPU output matches `x.to(float32).sum(1)` within rtol/atol=1e-2, and `ttgir` confirms `f32` + `tensor<32xf32` result type — Validated in Phase 3: Verification
+- ✓ **TEST-02**: All 4 existing extern-call tests pass unchanged (6/6 total incl. new + hook test) — Validated in Phase 3: Verification
+- ✓ **TEST-03**: lit suite unaffected (Gluon lit 5/5 pass; zero MLIR/dialect/production source changed) — Validated in Phase 3: Verification
 
 ### Active
 
-- [ ] **INFER-06**: New E2E test exercising a shape-and-dtype-changing extern call, plus existing 4 tests still pass (Phase 3: Verification)
+- None — v1.0 milestone requirements all validated. Return-type inference for `gl.call()` is feature-complete and verified end-to-end.
 
 ### Out of Scope
 
@@ -85,4 +88,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after Phase 2 (Semantic-Time Inference) completion*
+*Last updated: 2026-07-11 after Phase 3 (Verification) completion — v1.0 milestone complete: `gl.call()` return-type inference verified E2E on RTX 5090.*
