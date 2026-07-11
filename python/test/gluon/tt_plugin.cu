@@ -78,9 +78,20 @@ struct TensorLayout{
     };
 };
 
+struct PlaceholderLayout {};
+
 template<typename T, typename TShape, typename TLayout>
 struct Tensor{
     T data[TLayout::REG_SIZE];
+
+    template<typename T2, typename TShape2>
+    Tensor(const Tensor<T2, TShape2, PlaceholderLayout>& other) {
+        static_assert(std::is_same_v<T, T2>, "dtype mismatch in PlaceholderLayout conversion");
+        static_assert(std::is_same_v<TShape, TShape2>, "shape mismatch in PlaceholderLayout conversion");
+        #pragma unroll TLayout::REG_SIZE
+        for(uint32_t i = 0; i < TLayout::REG_SIZE; i++)
+            data[i] = other.data[i];
+    }
 };
 
 
