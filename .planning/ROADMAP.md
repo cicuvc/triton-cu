@@ -7,7 +7,7 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
 ## Phases
 
 - [x] **Phase 1: Seam & Cleanup** - Backend `codegen_fns` inference hook + single-parse plumbing + bundled bug fixes (completed 2026-07-11)
-- [ ] **Phase 2: Semantic-Time Inference** - Shape/dtype/layout inference at IR-build time with layout reconciliation
+- [x] **Phase 2: Semantic-Time Inference** - Shape/dtype/layout inference at IR-build time with layout reconciliation (completed 2026-07-11)
 - [ ] **Phase 3: Verification** - New shape/dtype-changing test + regression + module verification
 
 ## Phase Details
@@ -49,7 +49,7 @@ Plans:
   4. A kernel calling a shape-changing extern function (e.g. `reduce`) compiles and lowers with `llvm.verify_module` passing, WITHOUT the user hand-matching the return shape.
   5. Multi-return (`std::tuple`) and existing same-shape cases continue to work.
 
-**Plans**: 2/3 plans executed
+**Plans**: 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -62,7 +62,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 02-03-PLAN.md — Semantic-time consumption: call_extern hook integration, build + regression verification (INFER-04, INFER-05)
+- [x] 02-03-PLAN.md — Semantic-time consumption: call_extern hook integration, build + regression verification (INFER-04, INFER-05)
 
 ### Phase 3: Verification
 
@@ -89,5 +89,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Seam & Cleanup | 2/2 | Complete    | 2026-07-11 |
-| 2. Semantic-Time Inference | 2/3 | In Progress|  |
+| 2. Semantic-Time Inference | 3/3 | Complete   | 2026-07-11 |
 | 3. Verification | 0/TBD | Not started | - |

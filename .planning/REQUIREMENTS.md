@@ -15,8 +15,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Layout Reconciliation
 
-- [ ] **INFER-04**: `result_layout=` remains the requested **final** layout. When the CUDA-native layout differs, a `convert_layout` reconciles CUDA-native → user layout (reusing the existing patch/convert path where appropriate).
-- [ ] **INFER-05**: `assert_no_conv=True` still raises when a layout conversion would be required.
+- [x] **INFER-04**: `result_layout=` remains the requested **final** layout. When the CUDA-native layout differs, a `convert_layout` reconciles CUDA-native → user layout (reusing the existing patch/convert path where appropriate).
+- [x] **INFER-05**: `assert_no_conv=True` still raises when a layout conversion would be required.
 
 ### Frontend/Backend Seam
 
@@ -73,8 +73,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFER-01 | Phase 2 | Complete |
 | INFER-02 | Phase 2 | Complete |
 | INFER-03 | Phase 2 | Complete |
-| INFER-04 | Phase 2 | Pending |
-| INFER-05 | Phase 2 | Pending |
+| INFER-04 | Phase 2 | Complete |
+| INFER-05 | Phase 2 | Complete |
 | TEST-01 | Phase 3 | Pending |
 | TEST-02 | Phase 3 | Pending |
 | TEST-03 | Phase 3 | Pending |
