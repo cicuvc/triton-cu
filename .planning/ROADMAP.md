@@ -66,7 +66,7 @@ Plans:
 
 **Gap Closure** *(post-verification)*
 
-- [ ] 02-04-PLAN.md — Gap 1 (SC1 PARTIAL): Layout-independent inference for fixed-layout functions via PlaceholderLayout + ExplicitTemplateArgs fallback (INFER-01, INFER-02, INFER-03)
+- [x] 02-04-PLAN.md — Gap 1 (SC1 PARTIAL): Layout-independent inference for fixed-layout functions via PlaceholderLayout + ExplicitTemplateArgs fallback (INFER-01, INFER-02, INFER-03)
 - [ ] 02-05-PLAN.md — Gap 2 (PLAN 02-03 must_have): Hook-absent error raise in call_extern (INFER-06)
 
 ### Phase 3: Verification
