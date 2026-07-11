@@ -80,11 +80,11 @@ Plans:
   2. All 4 existing extern-call tests pass unchanged.
   3. `llvm.verify_module` passes after extern linking for new and existing cases; lit suite is unaffected.
 
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
 
-- [ ] 03-01: TBD during planning
+- [ ] 03-01-PLAN.md — New `reduce_f16` device fn + `reduce_f16_kernel`/`test_reduce_f16_f32` E2E test + regression gates (all 4 existing tests + lit suite)
 
 ## Progress
 
