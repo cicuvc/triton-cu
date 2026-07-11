@@ -20,8 +20,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Frontend/Backend Seam
 
-- [ ] **INFER-06**: The Gluon semantic layer reaches CUDA-specific inference through the backend `codegen_fns` hook (mirroring `convert_custom_types`/`min_dot_size`), without importing NVIDIA backend code into the frontend. Interpreter/non-CUDA backends degrade gracefully.
-- [ ] **INFER-07**: No redundant clang parse — inference at semantic time and bitcode compilation at `llir` stage do not double-compile the same `.cu` (reuse/cache, or documented single-parse path).
+- [x] **INFER-06**: The Gluon semantic layer reaches CUDA-specific inference through the backend `codegen_fns` hook (mirroring `convert_custom_types`/`min_dot_size`), without importing NVIDIA backend code into the frontend. Interpreter/non-CUDA backends degrade gracefully.
+- [x] **INFER-07**: No redundant clang parse — inference at semantic time and bitcode compilation at `llir` stage do not double-compile the same `.cu` (reuse/cache, or documented single-parse path).
 
 ### Bug Fixes (bundled)
 
@@ -66,8 +66,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFER-06 | Phase 1 | Pending |
-| INFER-07 | Phase 1 | Pending |
+| INFER-06 | Phase 1 | Complete |
+| INFER-07 | Phase 1 | Complete |
 | BUG-01 | Phase 1 | Complete |
 | BUG-02 | Phase 1 | Complete |
 | INFER-01 | Phase 2 | Pending |

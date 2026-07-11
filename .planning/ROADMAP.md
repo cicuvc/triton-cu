@@ -6,7 +6,7 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
 
 ## Phases
 
-- [ ] **Phase 1: Seam & Cleanup** - Backend `codegen_fns` inference hook + single-parse plumbing + bundled bug fixes
+- [x] **Phase 1: Seam & Cleanup** - Backend `codegen_fns` inference hook + single-parse plumbing + bundled bug fixes (completed 2026-07-11)
 - [ ] **Phase 2: Semantic-Time Inference** - Shape/dtype/layout inference at IR-build time with layout reconciliation
 - [ ] **Phase 3: Verification** - New shape/dtype-changing test + regression + module verification
 
@@ -25,7 +25,7 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
   4. Dead code at `compiler.py:510-513` is removed; `f64`/`fp64` handling is either a clear error or explicitly documented.
   5. Existing 4 extern-call tests still pass (no behavior change yet).
 
-**Plans**: 1/2 plans executed
+**Plans**: 2/2 plans complete
 
 Plans:
 **Wave 1**
@@ -34,7 +34,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Inference hook & single-parse seam: InferExternCallResult via codegen_fns (INFER-06), suspended CUDACompiler + parse-counter assertion (INFER-07)
+- [x] 01-02-PLAN.md — Inference hook & single-parse seam: InferExternCallResult via codegen_fns (INFER-06), suspended CUDACompiler + parse-counter assertion (INFER-07)
 
 ### Phase 2: Semantic-Time Inference
 
@@ -79,6 +79,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Seam & Cleanup | 1/2 | In Progress|  |
+| 1. Seam & Cleanup | 2/2 | Complete   | 2026-07-11 |
 | 2. Semantic-Time Inference | 0/TBD | Not started | - |
 | 3. Verification | 0/TBD | Not started | - |
