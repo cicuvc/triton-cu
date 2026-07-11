@@ -49,7 +49,7 @@ Plans:
   4. A kernel calling a shape-changing extern function (e.g. `reduce`) compiles and lowers with `llvm.verify_module` passing, WITHOUT the user hand-matching the return shape.
   5. Multi-return (`std::tuple`) and existing same-shape cases continue to work.
 
-**Plans**: 3/3 plans complete, 2 gap-closure plans pending
+**Plans**: 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -67,7 +67,7 @@ Plans:
 **Gap Closure** *(post-verification)*
 
 - [x] 02-04-PLAN.md — Gap 1 (SC1 PARTIAL): Layout-independent inference for fixed-layout functions via PlaceholderLayout + ExplicitTemplateArgs fallback (INFER-01, INFER-02, INFER-03)
-- [ ] 02-05-PLAN.md — Gap 2 (PLAN 02-03 must_have): Hook-absent error raise in call_extern (INFER-06)
+- [x] 02-05-PLAN.md — Gap 2 (PLAN 02-03 must_have): Hook-absent error raise in call_extern (INFER-06)
 
 ### Phase 3: Verification
 
@@ -94,5 +94,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Seam & Cleanup | 2/2 | Complete    | 2026-07-11 |
-| 2. Semantic-Time Inference | 3/3 | Complete   | 2026-07-11 |
+| 2. Semantic-Time Inference | 5/5 | Complete    | 2026-07-11 |
 | 3. Verification | 0/TBD | Not started | - |
