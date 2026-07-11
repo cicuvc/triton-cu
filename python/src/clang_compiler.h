@@ -339,6 +339,26 @@ struct CUDACompiler {
   clang::FunctionDecl *
   LookupFunction(const llvm::StringRef &Name,
                  const llvm::ArrayRef<clang::QualType> &Args);
+
+  // Gap 1 closure (Phase 02 Plan 04): Mechanism (a) —
+  // PlaceholderLayout + ExplicitTemplateArgs fallback for fixed-layout
+  // functions. When LookupFunction fails because the caller's dummy
+  // concrete bases don't match the function's fixed (non-template) layout
+  // parameters (e.g., TArg/TRes in reduce), this method rebuilds arg
+  // types using PlaceholderLayout, extracts the element type to build
+  // explicit template arguments, and re-runs clang template deduction
+  // with explicit args. With all template params explicit, clang treats
+  // the function as non-template for argument checking, which uses
+  // PerformCopyInitialization (implicit conversions OK) rather than
+  // structural template parameter matching (implicit conversions NOT OK).
+  // The Tensor(PlaceholderLayout)→Tensor(ConcreteLayout) implicit
+  // conversion constructor (tt_plugin.cu:91-98) then enables matching.
+  clang::FunctionDecl *
+  LookupFunctionWithPlaceholderFallback(
+      const llvm::StringRef &Name,
+      const std::vector<std::variant<ScalarType, TensorParameter>>
+          &ParamTypes);
+
   std::variant<std::nullptr_t, TensorParameter, TupleType>
   EvaluateFunctionReturnType(clang::FunctionDecl *FD);
   llvm::Function *InstantiationFunction(clang::FunctionDecl *);
