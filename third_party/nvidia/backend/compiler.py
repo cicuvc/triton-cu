@@ -217,13 +217,96 @@ class InferExternCallResult:
         compiler.parse(llvm_context, "cudamod")
         self._compilers[libpath] = compiler
 
-    def infer_result(self, func, arg_params, use_fast_math):
-        """Infer the CUDA return type for a function call. (Phase 2 consumer)
+    def infer_result(self, libpath, func, arg_params, use_fast_math):
+        """Infer the CUDA return type (scalar, shape) at semantic time.
 
-        Phase 1: callable but result is not consumed. Raises NotImplementedError.
+        Uses PlaceholderLayout-based probing to determine dtype+shape
+        without requiring concrete layouts. Returns a list of
+        (scalar_name, shape) tuples, one per result.
+
+        Args:
+            libpath: Path to the .cu source file (key into _compilers dict).
+            func: CUDA device function name.
+            arg_params: List of dicts with "dtype" and "shape" keys.
+            use_fast_math: Whether to use fast-math optimizations.
+
+        Returns:
+            List[Tuple[str, List[int]]]: Per-result (scalar_name, shape) tuples.
         """
-        raise NotImplementedError(
-            "infer_result: return-type inference not available in Phase 1")
+        import triton._C.libtriton.llvm as llvm
+
+        compiler = self._compilers.get(libpath)
+        if compiler is None:
+            raise RuntimeError(
+                f"infer_result: no suspended compiler for {libpath} — "
+                f"make_ir must create a SuspendedCudaCompiler first")
+
+        # dtype→ScalarType mapping (mirrors _scalar_type_for in
+        # _pre_compile_extern_calls, lines 648-664)
+        _dtype_to_scalar = {
+            "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
+            "f16": llvm.ScalarType.Fp16, "fp16": llvm.ScalarType.Fp16,
+            "bf16": llvm.ScalarType.Bf16,
+            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32,
+            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64,
+        }
+
+        def _scalar_type_for(dtype_str):
+            st = _dtype_to_scalar.get(dtype_str)
+            if st is None:
+                if dtype_str in ("f64", "fp64", "float64"):
+                    raise NotImplementedError(
+                        "gl.call() does not support float64; full Fp64 "
+                        "support is out of scope (see FP64-01)")
+                raise ValueError(f"Unsupported dtype: {dtype_str}")
+            return st
+
+        # Build CudaFuncRequest — same representation as
+        # _pre_compile_extern_calls (lines 684-702)
+        req = llvm.CudaFuncRequest()
+        req.symbol = func
+        req.use_fast_math = use_fast_math
+
+        param_types = []
+        for ap in arg_params:
+            tp = llvm.TensorParameter()
+            tp.type = _scalar_type_for(ap["dtype"])
+            tp.shape = ap["shape"]
+            tp.layout_shape = ap["shape"]
+            # PlaceholderLayout probe: empty bases, n_warps=0.
+            # The inference-only path uses these to build
+            # Tensor<T,Shape,PlaceholderLayout> args, which
+            # match any concrete Layout via implicit conversion.
+            tp.reg_basis = []
+            tp.lane_basis = []
+            tp.warp_basis = []
+            tp.n_warps = 0
+            param_types.append(tp)
+        req.param_types = param_types
+
+        # Call inference-only C++ method (D-01)
+        ok, bitcode, error, results = compiler.infer([req])
+        if not ok:
+            raise RuntimeError(
+                f"infer_result: CUDA type inference failed for "
+                f"'{func}': {error}")
+
+        _scalar_names = {
+            llvm.ScalarType.Fp32: "f32", llvm.ScalarType.Fp16: "f16",
+            llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int32: "i32",
+            llvm.ScalarType.Int64: "i64",
+        }
+        inferred = []
+        for result_tuple in results:
+            symbol, _, ret_types, _ = result_tuple
+            for tp in ret_types:
+                scalar_name = _scalar_names.get(tp.type, "f32")
+                inferred.append((scalar_name, list(tp.shape)))
+
+        if len(inferred) == 0:
+            raise RuntimeError(
+                f"infer_result: no return types inferred for '{func}'")
+        return inferred
 
     def compile_bitcode(self, libpath, requests):
         """Resume the suspended compiler and emit device bitcode.
