@@ -264,23 +264,18 @@ class GluonSemantic(TritonSemantic[TensorTy]):
 
         # Phase 2: Use CUDA-inferred dtype+shape for result type construction.
         # The inference hook was registered by the CUDA backend via codegen_fns.
-        # Try hook first; fall back to first_input-based inference on failure
-        # (e.g., for functions with fixed non-template layouts like reduce).
         infer_hook = self.builder.codegen_fns.get("infer_extern_call_result")
         inferred_results = None
         if infer_hook is not None:
-            try:
-                arg_params = []
-                for a in args:
-                    arg_params.append({
-                        "dtype": str(a.dtype),
-                        "shape": list(a.shape),
-                        "layout": a.type.layout,
-                    })
-                inferred_results = infer_hook.infer_result(
-                    str(src_path), func, arg_params, use_fast_math)
-            except RuntimeError:
-                pass  # Fall back to first_input-based inference below
+            arg_params = []
+            for a in args:
+                arg_params.append({
+                    "dtype": str(a.dtype),
+                    "shape": list(a.shape),
+                    "layout": a.type.layout,
+                })
+            inferred_results = infer_hook.infer_result(
+                str(src_path), func, arg_params, use_fast_math)
 
         result_types = []
         for i, lo in enumerate(result_layouts):
