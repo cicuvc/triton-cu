@@ -25,8 +25,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Bug Fixes (bundled)
 
-- [ ] **BUG-01**: Remove dead unreachable code at `compiler.py:510-513`.
-- [ ] **BUG-02**: Decide and implement handling for `f64`/`fp64` → `Fp32` silent coercion (`compiler.py:542`): either raise a clear error at the API boundary or document the coercion explicitly.
+- [x] **BUG-01**: Remove dead unreachable code at `compiler.py:510-513`.
+- [x] **BUG-02**: Decide and implement handling for `f64`/`fp64` → `Fp32` silent coercion (`compiler.py:542`): either raise a clear error at the API boundary or document the coercion explicitly.
 
 ### Verification
 
@@ -68,8 +68,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | INFER-06 | Phase 1 | Pending |
 | INFER-07 | Phase 1 | Pending |
-| BUG-01 | Phase 1 | Pending |
-| BUG-02 | Phase 1 | Pending |
+| BUG-01 | Phase 1 | Complete |
+| BUG-02 | Phase 1 | Complete |
 | INFER-01 | Phase 2 | Pending |
 | INFER-02 | Phase 2 | Pending |
 | INFER-03 | Phase 2 | Pending |
@@ -80,6 +80,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TEST-03 | Phase 3 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 12 total
 - Mapped to phases: 12
 - Unmapped: 0 ✓

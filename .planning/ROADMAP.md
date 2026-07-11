@@ -25,12 +25,12 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
   4. Dead code at `compiler.py:510-513` is removed; `f64`/`fp64` handling is either a clear error or explicitly documented.
   5. Existing 4 extern-call tests still pass (no behavior change yet).
 
-**Plans**: 2 plans
+**Plans**: 1/2 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Bug fixes: remove dead code (BUG-01) and add f64/fp64 guard at both layers (BUG-02)
+- [x] 01-01-PLAN.md — Bug fixes: remove dead code (BUG-01) and add f64/fp64 guard at both layers (BUG-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -79,6 +79,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Seam & Cleanup | 0/TBD | Not started | - |
+| 1. Seam & Cleanup | 1/2 | In Progress|  |
 | 2. Semantic-Time Inference | 0/TBD | Not started | - |
 | 3. Verification | 0/TBD | Not started | - |
