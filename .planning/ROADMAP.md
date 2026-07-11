@@ -8,7 +8,7 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
 
 - [x] **Phase 1: Seam & Cleanup** - Backend `codegen_fns` inference hook + single-parse plumbing + bundled bug fixes (completed 2026-07-11)
 - [x] **Phase 2: Semantic-Time Inference** - Shape/dtype/layout inference at IR-build time with layout reconciliation (completed 2026-07-11)
-- [ ] **Phase 3: Verification** - New shape/dtype-changing test + regression + module verification
+- [x] **Phase 3: Verification** - New shape/dtype-changing test + regression + module verification (completed 2026-07-11)
 
 ## Phase Details
 
@@ -80,11 +80,11 @@ Plans:
   2. All 4 existing extern-call tests pass unchanged.
   3. `llvm.verify_module` passes after extern linking for new and existing cases; lit suite is unaffected.
 
-**Plans**: 1 plan
+**Plans**: 1/1 plans complete
 
 Plans:
 
-- [ ] 03-01-PLAN.md — New `reduce_f16` device fn + `reduce_f16_kernel`/`test_reduce_f16_f32` E2E test + regression gates (all 4 existing tests + lit suite)
+- [x] 03-01-PLAN.md — New `reduce_f16` device fn + `reduce_f16_kernel`/`test_reduce_f16_f32` E2E test + regression gates (all 4 existing tests + lit suite)
 
 ## Progress
 
@@ -95,4 +95,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Seam & Cleanup | 2/2 | Complete    | 2026-07-11 |
 | 2. Semantic-Time Inference | 5/5 | Complete    | 2026-07-11 |
-| 3. Verification | 0/TBD | Not started | - |
+| 3. Verification | 1/1 | Complete   | 2026-07-11 |

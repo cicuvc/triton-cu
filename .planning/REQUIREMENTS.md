@@ -30,9 +30,9 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Verification
 
-- [ ] **TEST-01**: New E2E test in `test_extern_call.py` exercising an extern call whose return **shape and/or dtype** differs from the first argument, WITHOUT the user manually matching that shape/dtype (only the final `result_layout` supplied).
-- [ ] **TEST-02**: All 4 existing extern-call tests (elementwise_add, intra_warp_add_sibling, reduce, split_add tuple) still pass.
-- [ ] **TEST-03**: `llvm.verify_module` passes after extern linking for the new and existing cases; lit suite unaffected.
+- [x] **TEST-01**: New E2E test in `test_extern_call.py` exercising an extern call whose return **shape and/or dtype** differs from the first argument, WITHOUT the user manually matching that shape/dtype (only the final `result_layout` supplied).
+- [x] **TEST-02**: All 4 existing extern-call tests (elementwise_add, intra_warp_add_sibling, reduce, split_add tuple) still pass.
+- [x] **TEST-03**: `llvm.verify_module` passes after extern linking for the new and existing cases; lit suite unaffected.
 
 ## v2 Requirements
 
@@ -75,9 +75,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFER-03 | Phase 2 | Complete |
 | INFER-04 | Phase 2 | Complete |
 | INFER-05 | Phase 2 | Complete |
-| TEST-01 | Phase 3 | Pending |
-| TEST-02 | Phase 3 | Pending |
-| TEST-03 | Phase 3 | Pending |
+| TEST-01 | Phase 3 | Complete |
+| TEST-02 | Phase 3 | Complete |
+| TEST-03 | Phase 3 | Complete |
 
 **Coverage:**
 
