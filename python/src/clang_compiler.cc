@@ -51,6 +51,11 @@ using llvm::cast_or_null;
 using llvm::dyn_cast;
 using llvm::isa;
 
+// D-07: Per-compile parse counter — incremented once per clang parse.
+// Accessible from Python via get_extern_cuda_parse_count() for
+// single-parse assertion in make_llir.
+static int sExternCudaParseCount = 0;
+
 // ============================================================
 // Backend initialization
 // ============================================================
@@ -683,6 +688,8 @@ CUDACompiler::CUDACompiler(
 void CUDACompiler::PerformParse(
     llvm::LLVMContext &Context,
     const llvm::StringRef &ModuleName) {
+  // D-07: Count every clang parse for per-compile delta assertion.
+  sExternCudaParseCount++;
   auto launchArgs =
       std::make_unique<LaunchArgs>(*this, Context, ModuleName);
   CompileExecutionContext =
@@ -691,6 +698,8 @@ void CUDACompiler::PerformParse(
           (uint64_t)(&launchArgs), clang::DesiredStackSize);
   InvocationContext->SwitchTo(*CompileExecutionContext);
 }
+
+int getExternCudaParseCount() { return sExternCudaParseCount; }
 
 clang::QualType
 CUDACompiler::BuildTensor(const TensorParameter &Param) {
@@ -792,6 +801,138 @@ std::unique_ptr<llvm::Module> CUDACompiler::EmitFinalModule() {
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;
+}
+
+// INFER-07: Split-path compile — runs inference+codegen+emit phases
+// on an already-parsed compiler.  Assumes PerformParse was called
+// first (the coroutine is parked inside HandleTranslationUnit).
+std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
+CUDACompiler::compileBitcode(
+    const std::vector<CudaFuncRequest> &requests) {
+  std::vector<CudaFuncResult> results;
+  InitializeNVPTXBackend();
+
+  // Check for conflicting use_fast_math hints on the same symbol.
+  llvm::StringMap<bool> fastMathMap;
+  for (auto &req : requests) {
+    auto it = fastMathMap.find(req.Symbol);
+    if (it != fastMathMap.end() && it->second != req.UseFastMath)
+      return {"",
+              "conflicting use_fast_math hints for '" + req.Symbol + "'",
+              {}};
+    fastMathMap[req.Symbol] = req.UseFastMath;
+  }
+
+  std::vector<clang::FunctionDecl *> resolvedFDs;
+  std::vector<std::vector<TensorParameter>> returnTypes;
+  std::vector<std::vector<clang::FunctionDecl *>> extractorFDs;
+
+  // Phase 1: Type inference for all calls
+  for (auto &req : requests) {
+    llvm::SmallVector<clang::QualType, 4> argTypes(
+        req.ParamTypes.size());
+
+    for (size_t J = 0; J < req.ParamTypes.size(); J++) {
+      if (auto *tp =
+              std::get_if<TensorParameter>(&req.ParamTypes[J])) {
+        argTypes[J] = this->BuildTensor(*tp);
+      } else if (auto *st = std::get_if<ScalarType>(
+                     &req.ParamTypes[J])) {
+        clang::QualType Result;
+        this->TaskQueue.emplace(
+            [&, st](TensorTypeHelpers &helper,
+                    CustomAstConsumer &) {
+              Result = getQualTypeFromScalarType(helper.Builder.Ctx,
+                                                  *st);
+            });
+        this->InvocationContext->SwitchTo(
+            *this->CompileExecutionContext);
+        argTypes[J] = Result;
+      }
+    }
+
+    auto *FD =
+        this->LookupFunction(req.Symbol, argTypes);
+    if (!FD)
+      return {"", "Function lookup failed: " + req.Symbol, {}};
+
+    auto ret = this->EvaluateFunctionReturnType(FD);
+    std::vector<TensorParameter> retParams;
+    if (auto *tp = std::get_if<TensorParameter>(&ret)) {
+      retParams.push_back(std::move(*tp));
+    } else if (auto *tt = std::get_if<TupleType>(&ret)) {
+      for (auto &elem : tt->Types) {
+        if (auto *tp = std::get_if<TensorParameter>(&elem))
+          retParams.push_back(std::move(*tp));
+      }
+    }
+
+    resolvedFDs.push_back(FD);
+    auto numReturnParams = retParams.size();
+    returnTypes.push_back(std::move(retParams));
+
+    std::vector<clang::FunctionDecl *> extrFDs;
+    if (numReturnParams > 1) {
+      auto tupleRetType = FD->getCallResultType().getCanonicalType();
+      for (unsigned ei = 0; ei < numReturnParams; ei++) {
+        auto intsQualType = this->BuildInts(ei);
+        auto *extrFD = this->LookupFunction(
+            "get_tuple_elem", {intsQualType, tupleRetType});
+        if (!extrFD)
+          return {"",
+                  "extractor lookup failed for '" + req.Symbol +
+                      "' result " + std::to_string(ei),
+                  {}};
+        extrFDs.push_back(extrFD);
+      }
+    }
+    extractorFDs.push_back(std::move(extrFDs));
+  }
+
+  // Phase 2: Codegen for all resolved functions
+  for (size_t i = 0; i < resolvedFDs.size(); ++i) {
+    auto *fn = this->InstantiationFunction(resolvedFDs[i]);
+    if (!fn)
+      return {"", "Instantiation failed for " + requests[i].Symbol,
+              {}};
+
+    if (requests[i].UseFastMath) {
+      for (auto &BB : *fn)
+        for (auto &I : BB)
+          if (isa<llvm::FPMathOperator>(I))
+            I.setFast(true);
+    }
+
+    CudaFuncResult r;
+    r.Symbol = requests[i].Symbol;
+    r.MangledName = fn->getName().str();
+    r.ReturnTypes = std::move(returnTypes[i]);
+
+    for (auto *extrFD : extractorFDs[i]) {
+      auto *extrFn = this->InstantiationFunction(extrFD);
+      if (!extrFn)
+        return {"",
+                "extractor instantiation failed for '" +
+                    requests[i].Symbol + "'",
+                {}};
+      r.ExtractorMangledNames.push_back(extrFn->getName().str());
+    }
+
+    results.push_back(std::move(r));
+  }
+
+  // Phase 3: Finalize
+  auto mod = this->EmitFinalModule();
+  if (!mod)
+    return {"", "Failed to emit LLVM module", {}};
+
+  std::string bitcode;
+  {
+    llvm::raw_string_ostream os(bitcode);
+    llvm::WriteBitcodeToFile(*mod, os);
+  }
+
+  return {bitcode, "", results};
 }
 
 // ============================================================

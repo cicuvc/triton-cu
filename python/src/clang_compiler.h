@@ -342,6 +342,11 @@ struct CUDACompiler {
   EvaluateFunctionReturnType(clang::FunctionDecl *FD);
   llvm::Function *InstantiationFunction(clang::FunctionDecl *);
   std::unique_ptr<llvm::Module> EmitFinalModule();
+
+  // INFER-07: Split-path compile — runs inference+codegen+emit phases
+  // on an already-parsed compiler (Parse must have been called first).
+  std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
+  compileBitcode(const std::vector<CudaFuncRequest> &requests);
 };
 
 // ============================================================
@@ -451,6 +456,10 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
                   const std::vector<CudaFuncRequest> &requests);
 
 std::string tritonExtractExternCallSpecs(mlir::ModuleOp module);
+
+// D-07: Returns the total number of clang parses performed across all
+// compilations in this process. Used for per-compile delta assertions.
+int getExternCudaParseCount();
 
 // Patch extern_call op result types based on CUDA-inferred return types.
 // Returns empty string on success, error message on failure.
