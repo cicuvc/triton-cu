@@ -13,47 +13,63 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
 ## Phase Details
 
 ### Phase 1: Seam & Cleanup
+
 **Goal**: Establish a clean way for the backend-agnostic Gluon semantic layer to invoke CUDA return-type inference, ensure the `.cu` is not parsed twice, and clear the bundled bugs — before touching the inference data flow.
 **Depends on**: Nothing (first phase)
 **Requirements**: INFER-06, INFER-07, BUG-01, BUG-02
 **Success Criteria** (what must be TRUE):
+
   1. The CUDA backend exposes a return-type-inference callable via `get_codegen_implementation` / `codegen_fns` that the Gluon semantic layer can call, given `(src_path, func, arg tensor types/layouts, use_fast_math)`.
   2. Non-CUDA/interpreter paths degrade gracefully (no crash when the hook is absent).
   3. Inference and the existing `llir`-stage bitcode compilation share a single clang parse of a given `.cu` (reuse/cache), or the single-parse path is documented and measured.
   4. Dead code at `compiler.py:510-513` is removed; `f64`/`fp64` handling is either a clear error or explicitly documented.
   5. Existing 4 extern-call tests still pass (no behavior change yet).
+
 **Plans**: 2 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 01-01-PLAN.md — Bug fixes: remove dead code (BUG-01) and add f64/fp64 guard at both layers (BUG-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 01-02-PLAN.md — Inference hook & single-parse seam: InferExternCallResult via codegen_fns (INFER-06), suspended CUDACompiler + parse-counter assertion (INFER-07)
 
 ### Phase 2: Semantic-Time Inference
+
 **Goal**: Make `call_extern` (in `_semantic.py`) obtain the CUDA-inferred element type, shape, and native layout, build the `ttg.extern_call` result type from them, and reconcile to the user's requested `result_layout` via `convert_layout`.
 **Depends on**: Phase 1
 **Requirements**: INFER-01, INFER-02, INFER-03, INFER-04, INFER-05
 **Success Criteria** (what must be TRUE):
+
   1. `call_extern` builds each result's `distributed_type` from CUDA-inferred dtype + shape + native layout (via `TensorParameter` → `DistributedLinearLayout` round-trip), not from `first_input`.
   2. When the user's `result_layout` differs from the CUDA-native layout, a `convert_layout` produces the final tensor in the requested layout; downstream ops consume the user layout.
   3. `assert_no_conv=True` raises when a conversion would be required.
   4. A kernel calling a shape-changing extern function (e.g. `reduce`) compiles and lowers with `llvm.verify_module` passing, WITHOUT the user hand-matching the return shape.
   5. Multi-return (`std::tuple`) and existing same-shape cases continue to work.
+
 **Plans**: TBD
 
 Plans:
+
 - [ ] 02-01: TBD during planning
 
 ### Phase 3: Verification
+
 **Goal**: Prove the feature end-to-end and guard against regressions.
 **Depends on**: Phase 2
 **Requirements**: TEST-01, TEST-02, TEST-03
 **Success Criteria** (what must be TRUE):
+
   1. A new `test_extern_call.py` test exercises an extern call whose return shape and/or dtype differs from the first argument, supplying only the final `result_layout` (not a hand-computed shape/dtype), and produces numerically correct results on GPU.
   2. All 4 existing extern-call tests pass unchanged.
   3. `llvm.verify_module` passes after extern linking for new and existing cases; lit suite is unaffected.
+
 **Plans**: TBD
 
 Plans:
+
 - [ ] 03-01: TBD during planning
 
 ## Progress
