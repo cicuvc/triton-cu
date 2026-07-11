@@ -507,11 +507,6 @@ class CUDABackend(BaseBackend):
         del context
         return ret
 
-        ret = str(llvm_mod)
-        del llvm_mod
-        del context
-        return ret
-
     def _pre_compile_extern_calls(self, mod, metadata, capability, llvm_context):
         """Pre-compile extern_call ops before MLIR lowering.
         Scans MLIR module for ttg.extern_call ops, builds template function
