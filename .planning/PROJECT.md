@@ -19,6 +19,8 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ `std::tuple<Tensor,...>` multi-return support via `get_tuple_elem` extractors — existing
 - ✓ `use_fast_math` per-function fast-math flag — existing
 - ✓ E2E tests: elementwise add, intra-warp shuffle, reduce (shape change via manual `result_layout`), split_add tuple — existing (`test_extern_call.py`)
+- ✓ Frontend↔backend inference seam: `InferExternCallResult` hook via `codegen_fns` + single-parse suspended `CUDACompiler` with parse-counter guard — Validated in Phase 1: Seam & Cleanup
+- ✓ Bundled bug fixes: dead code removed (`compiler.py:510-513`), `f64`/`fp64` raises `NotImplementedError` at both frontend and backend layers (no silent Fp32 coercion) — Validated in Phase 1: Seam & Cleanup
 
 ### Active
 
@@ -62,7 +64,7 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 |----------|-----------|---------|
 | Keep `result_layout` required (not auto-derived) | User wants explicit control of the final layout; smaller blast radius than making it optional | — Pending |
 | Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent; patch-step `convert_layout` cannot change shape/dtype | — Pending |
-| Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | — Pending |
+| Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | ✓ Good — seam built in Phase 1 |
 | Treat CONCERNS.md as partly outdated | Verified in code that the patch step already handles layout + convert_layout; real gap is shape/dtype hard-error | ✓ Good |
 
 ## Evolution
@@ -83,4 +85,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after initialization*
+*Last updated: 2026-07-11 after Phase 1 (Seam & Cleanup) completion*
