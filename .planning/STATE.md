@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 2
+current_phase: 02
 current_phase_name: Semantic-Time Inference
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-07-11T11:47:02.545Z"
+last_updated: "2026-07-11T12:13:17.081Z"
 last_activity: 2026-07-11
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
+last_activity_desc: Phase 02 execution started
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 5
+  completed_plans: 3
   percent: 33
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-11)
 
 **Core value:** `gl.call()` produces MLIR result types (dtype, shape, layout) matching what the CUDA C++ function actually returns, with type-consistent downstream IR.
-**Current focus:** Phase 01 — seam-cleanup
+**Current focus:** Phase 02 — Semantic-Time Inference
 
 ## Current Position
 
-Phase: 2 — Semantic-Time Inference
-Plan: Not started
+Phase: 02 (Semantic-Time Inference) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-07-11 — Phase 01 complete, transitioned to Phase 2
+Last activity: 2026-07-11 — Phase 02 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -48,6 +48,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 2 | - | - |
+| Phase 02 P01 | 2 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,8 @@ Decisions are logged in PROJECT.md Key Decisions table. Recent:
 - [Phase 01-seam-cleanup]: .planning/phases/01-seam-cleanup/01-02-SUMMARY.md
 - [Phase 01-seam-cleanup]: .planning/phases/01-seam-cleanup/01-02-SUMMARY.md
 - [Phase 01-seam-cleanup]: .planning/phases/01-seam-cleanup/01-02-SUMMARY.md
+- [Phase ?]: Used PlaceholderLayout with implicit conversion for dtype+shape-only inference (D-05/D-06)
+- [Phase ?]: PlaceholderLayout lookup failure falls through to existing concrete-layout code path for backward compatibility
 
 ### Pending Todos
 
@@ -86,6 +89,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-11T11:28:18.635Z
+Last session: 2026-07-11T12:12:56.811Z
 Stopped at: Phase 2 context gathered
 Resume file: .planning/phases/02-semantic-time-inference/02-CONTEXT.md

@@ -9,8 +9,8 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Inference Pipeline
 
-- [ ] **INFER-01**: CUDA-inferred return **shape** flows into the `ttg.extern_call` result type. Functions returning a different shape than the first argument (e.g. `reduce`: `Shape<32,32>` → `Shape<32>`) compile without the user hand-computing the shape.
-- [ ] **INFER-02**: CUDA-inferred return **dtype** flows into the result type. Functions changing element type (e.g. `f16`→`f32`) produce a result tensor with the correct element type.
+- [x] **INFER-01**: CUDA-inferred return **shape** flows into the `ttg.extern_call` result type. Functions returning a different shape than the first argument (e.g. `reduce`: `Shape<32,32>` → `Shape<32>`) compile without the user hand-computing the shape.
+- [x] **INFER-02**: CUDA-inferred return **dtype** flows into the result type. Functions changing element type (e.g. `f16`→`f32`) produce a result tensor with the correct element type.
 - [ ] **INFER-03**: Inference runs at IR-build (semantic) time. The `ttg.extern_call` op result type and all downstream consumers (`gl.store`, arithmetic, etc.) stay type-consistent — no MLIR verification failures after lowering.
 
 ### Layout Reconciliation
@@ -70,8 +70,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFER-07 | Phase 1 | Complete |
 | BUG-01 | Phase 1 | Complete |
 | BUG-02 | Phase 1 | Complete |
-| INFER-01 | Phase 2 | Pending |
-| INFER-02 | Phase 2 | Pending |
+| INFER-01 | Phase 2 | Complete |
+| INFER-02 | Phase 2 | Complete |
 | INFER-03 | Phase 2 | Pending |
 | INFER-04 | Phase 2 | Pending |
 | INFER-05 | Phase 2 | Pending |

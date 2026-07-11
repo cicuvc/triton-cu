@@ -49,16 +49,19 @@ Plans:
   4. A kernel calling a shape-changing extern function (e.g. `reduce`) compiles and lowers with `llvm.verify_module` passing, WITHOUT the user hand-matching the return shape.
   5. Multi-return (`std::tuple`) and existing same-shape cases continue to work.
 
-**Plans**: 3 plans
+**Plans**: 1/3 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 02-01-PLAN.md — Device library + C++ core: PlaceholderLayout in tt_plugin.cu, BuildTensor placeholder mode, CUDACompiler::inferReturnTypes (INFER-01, INFER-02)
+
+- [x] 02-01-PLAN.md — Device library + C++ core: PlaceholderLayout in tt_plugin.cu, BuildTensor placeholder mode, CUDACompiler::inferReturnTypes (INFER-01, INFER-02)
 
 **Wave 2** *(blocked on Wave 1)*
+
 - [ ] 02-02-PLAN.md — Python bindings + hook: SuspendedCudaCompiler.infer() binding, InferExternCallResult.infer_result() (INFER-03)
 
 **Wave 3** *(blocked on Wave 2)*
+
 - [ ] 02-03-PLAN.md — Semantic-time consumption: call_extern hook integration, build + regression verification (INFER-04, INFER-05)
 
 ### Phase 3: Verification
@@ -86,5 +89,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Seam & Cleanup | 2/2 | Complete    | 2026-07-11 |
-| 2. Semantic-Time Inference | 0/TBD | Not started | - |
+| 2. Semantic-Time Inference | 1/3 | In Progress|  |
 | 3. Verification | 0/TBD | Not started | - |
