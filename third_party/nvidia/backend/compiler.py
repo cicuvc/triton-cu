@@ -580,14 +580,12 @@ class CUDABackend(BaseBackend):
                 raise RuntimeError("LLVM module verification failed after extern linking")
 
         # D-07: Per-compile parse-count assertion — guards against
-        # double-parsing.  The delta (parses during THIS compile) must
-        # equal the number of distinct .cu files.  Uses zero-based delta
-        # so the assertion survives multiple compilations in one process
-        # (pytest multi-test).
+        # double-parsing.  The delta (parses during THIS compile, from
+        # hook creation through now) must equal the number of distinct
+        # .cu files.
         if has_extern_calls:
-            parse_count_delta = metadata.get("__extern_cuda_parse_count__", 0)
-            specs_list = metadata.get("__extern_call_specs__", [])
-            distinct_cu = len(set(s["libpath"] for s in specs_list)) if specs_list else 0
+            parse_count_delta = metadata.get("_extern_parse_delta", 0)
+            distinct_cu = metadata.get("_extern_distinct_cu", 0)
             assert parse_count_delta == distinct_cu, (
                 f"extern CUDA parse count mismatch: {parse_count_delta} parse(s) "
                 f"for {distinct_cu} distinct .cu file(s) "
@@ -773,9 +771,10 @@ class CUDABackend(BaseBackend):
         # now, spanning both semantic and llir stages).
         _hook = getattr(self, '_infer_hook', None)
         _count_before = _hook._parse_count_before if _hook is not None else 0
-        metadata["__extern_cuda_parse_count__"] = \
-            llvm.get_extern_cuda_parse_count() - _count_before
-        metadata["__extern_call_specs__"] = specs_list
+        _parse_delta = llvm.get_extern_cuda_parse_count() - _count_before
+        _distinct_cu = len(by_libpath)
+        metadata["_extern_parse_delta"] = _parse_delta
+        metadata["_extern_distinct_cu"] = _distinct_cu
         return True
 
 
