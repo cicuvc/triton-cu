@@ -584,8 +584,8 @@ class CUDABackend(BaseBackend):
         # hook creation through now) must equal the number of distinct
         # .cu files.
         if has_extern_calls:
-            parse_count_delta = metadata.get("_extern_parse_delta", 0)
-            distinct_cu = metadata.get("_extern_distinct_cu", 0)
+            parse_count_delta = metadata.get("extern_parse_delta", 0)
+            distinct_cu = metadata.get("extern_distinct_cu", 0)
             assert parse_count_delta == distinct_cu, (
                 f"extern CUDA parse count mismatch: {parse_count_delta} parse(s) "
                 f"for {distinct_cu} distinct .cu file(s) "
@@ -773,8 +773,8 @@ class CUDABackend(BaseBackend):
         _count_before = _hook._parse_count_before if _hook is not None else 0
         _parse_delta = llvm.get_extern_cuda_parse_count() - _count_before
         _distinct_cu = len(by_libpath)
-        metadata["_extern_parse_delta"] = _parse_delta
-        metadata["_extern_distinct_cu"] = _distinct_cu
+        metadata["extern_parse_delta"] = _parse_delta
+        metadata["extern_distinct_cu"] = _distinct_cu
         return True
 
 
