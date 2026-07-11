@@ -194,17 +194,23 @@ class InferExternCallResult:
         self._resource_dir = resource_dir
         self._include_paths = include_paths
         self._compilers = {}  # libpath -> SuspendedCudaCompiler
+        self._llvm_ctx = None  # Shared LLVMContext (set on first create_and_suspend)
 
-    def create_and_suspend(self, source, context, libpath):
+    def create_and_suspend(self, source, llvm_context, libpath):
         """Create CUDACompiler, parse+suspend it (parks in HandleTranslationUnit).
 
         Called at semantic time by Gluon make_ir for each distinct .cu file.
         The compiler's coroutine is parked waiting for tasks — ASTContext alive.
+
+        `llvm_context` must be an LLVM context (from llvm.context()), shared
+        across the entire compile so bitcode links correctly at the llir stage.
         """
         import triton._C.libtriton.llvm as llvm
+        if self._llvm_ctx is None:
+            self._llvm_ctx = llvm_context
         compiler = llvm.SuspendedCudaCompiler(
             source, 3, self._sm, self._resource_dir, self._include_paths)
-        compiler.parse(context, "cudamod")
+        compiler.parse(llvm_context, "cudamod")
         self._compilers[libpath] = compiler
 
     def infer_result(self, func, arg_params, use_fast_math):
@@ -511,7 +517,11 @@ class CUDABackend(BaseBackend):
         # mangled name mappings that ExternCallOpToLLVM reads.
         import json as _json
         llvm.init_targets()
-        context = llvm.context()
+        # D-05: Reuse the semantic-stage LLVMContext if the hook created one
+        # (from make_ir / create_and_suspend).  Otherwise create a fresh one.
+        _hook = getattr(self, '_infer_hook', None)
+        _shared_ctx = _hook._llvm_ctx if _hook is not None else None
+        context = _shared_ctx if _shared_ctx is not None else llvm.context()
         has_extern_calls = self._pre_compile_extern_calls(
             mod, metadata, capability, context)
         if has_extern_calls:
@@ -618,6 +628,14 @@ class CUDABackend(BaseBackend):
         # compilation so the assertion in make_llir works across multiple
         # compiles in one process (pytest multi-test).
         _parse_count_before = llvm.get_extern_cuda_parse_count()
+
+        # D-05: If the semantic stage already created a shared LLVMContext
+        # (via make_ir / InferExternCallResult.create_and_suspend), reuse
+        # it so bitcode from suspended compilers links correctly. Otherwise
+        # fall back to the llir-stage context.
+        _hook = getattr(self, '_infer_hook', None)
+        if _hook is not None and _hook._llvm_ctx is not None:
+            llvm_context = _hook._llvm_ctx
 
         install_prefix = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                                       "..", "llvm-project", "install")

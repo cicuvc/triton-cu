@@ -90,10 +90,13 @@ class GluonASTSource(ASTSource):
 
             _hook = codegen_fns.get("infer_extern_call_result")
             if _hook is not None:
+                import triton._C.libtriton.llvm as _llvm
+                _llvm.init_targets()
+                _llvm_ctx = _llvm.context()
                 for _cu_path in _cu_paths:
                     with open(_cu_path) as _f:
                         _cu_source = _f.read()
-                    _hook.create_and_suspend(_cu_source, context, _cu_path)
+                    _hook.create_and_suspend(_cu_source, _llvm_ctx, _cu_path)
 
         module = ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                              module_map=module_map, module=module)
