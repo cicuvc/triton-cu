@@ -1,5 +1,6 @@
 import torch
 import pytest
+from unittest.mock import patch
 
 import triton
 from triton._internal_testing import is_cuda
@@ -98,3 +99,33 @@ def test_split_add_tuple(BLOCK):
     torch.cuda.synchronize()
     torch.testing.assert_close(out_sum, x + y)
     torch.testing.assert_close(out_diff, x - y)
+
+
+def test_gl_call_no_inference_hook_raises():
+    """Verify that gl.call() raises a clear error when the CUDA inference
+    hook is absent (simulating a non-CUDA backend)."""
+
+    @gluon.jit
+    def _kernel(x_ptr, out_ptr):
+        layout: gl.constexpr = gl.BlockedLayout([16], [32], [1], [0])
+        idx = gl.arange(0, 512, layout=layout)
+        x_vals = gl.load(x_ptr + idx)
+        out_vals = gl.call("python/test/gluon/tt_plugin.cu",
+                            "elementwise_add", x_vals, x_vals,
+                            result_layout=layout)
+        gl.store(out_ptr + idx, out_vals)
+
+    import triton.experimental.gluon._runtime as _rt
+    original_make_ir = _rt.GluonASTSource.make_ir
+
+    def patched_make_ir(self, target, options, codegen_fns, module_map, context):
+        # Simulate a non-CUDA backend: remove the inference hook
+        codegen_fns.pop("infer_extern_call_result", None)
+        return original_make_ir(self, target, options, codegen_fns, module_map, context)
+
+    with patch.object(_rt.GluonASTSource, 'make_ir', patched_make_ir):
+        x = torch.randn(512, device='cuda')
+        out = torch.empty_like(x)
+        with pytest.raises(triton.compiler.errors.CompilationError,
+                           match=r"gl\.call\(\) extern CUDA calls require the CUDA backend"):
+            _kernel[(1,)](x, out, num_warps=1)
