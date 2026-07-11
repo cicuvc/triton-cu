@@ -22,10 +22,11 @@ Complete the return-type inference feature for `gl.call()`. The CUDA-side infere
   3. Inference and the existing `llir`-stage bitcode compilation share a single clang parse of a given `.cu` (reuse/cache), or the single-parse path is documented and measured.
   4. Dead code at `compiler.py:510-513` is removed; `f64`/`fp64` handling is either a clear error or explicitly documented.
   5. Existing 4 extern-call tests still pass (no behavior change yet).
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD during planning
+- [ ] 01-01-PLAN.md — Bug fixes: remove dead code (BUG-01) and add f64/fp64 guard at both layers (BUG-02)
+- [ ] 01-02-PLAN.md — Inference hook & single-parse seam: InferExternCallResult via codegen_fns (INFER-06), suspended CUDACompiler + parse-counter assertion (INFER-07)
 
 ### Phase 2: Semantic-Time Inference
 **Goal**: Make `call_extern` (in `_semantic.py`) obtain the CUDA-inferred element type, shape, and native layout, build the `ttg.extern_call` result type from them, and reconcile to the user's requested `result_layout` via `convert_layout`.
