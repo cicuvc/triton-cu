@@ -276,6 +276,11 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                 })
             inferred_results = infer_hook.infer_result(
                 str(src_path), func, arg_params, use_fast_math)
+        else:
+            raise RuntimeError(
+                "gl.call() extern CUDA calls require the CUDA backend. "
+                "No inference hook (infer_extern_call_result) found "
+                "in codegen_fns.")
 
         result_types = []
         for i, lo in enumerate(result_layouts):
