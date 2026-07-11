@@ -150,6 +150,17 @@ __device__ Tensor<T, Shape<32>, TRes> reduce(const Tensor<T, Shape<32, 32>, TArg
     return Result;
 }
 
+// f16 -> f32 reduction: same layout structure as reduce, different element types
+__device__ Tensor<float, Shape<32>, TRes> reduce_f16(const Tensor<half, Shape<32, 32>, TArg>& Vals){
+    Tensor<float, Shape<32>, TRes>  Result;
+    Result.data[0] = float{};
+    #pragma unroll
+    for(int i = 0; i < 32; i++){
+        Result.data[0] += Vals.data[i];
+    }
+    return Result;
+}
+
 template<typename T, uint32_t TILE_WIDTH, typename TLayout>
 __device__ std::tuple<Tensor<T, Shape<TILE_WIDTH>, TLayout>,
                        Tensor<T, Shape<TILE_WIDTH>, TLayout>>
