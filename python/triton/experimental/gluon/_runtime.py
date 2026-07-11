@@ -64,6 +64,37 @@ class GluonASTSource(ASTSource):
         if is_cuda and options.maxnreg is not None:
             module.set_attr("ttg.maxnreg", builder.get_int32_attr(options.maxnreg))
 
+        # D-05/D-06: Pre-scan kernel source for gl.call(".cu") patterns.
+        # Create+suspend a CUDACompiler for each distinct .cu file so
+        # _pre_compile_extern_calls can resume them at the llir stage.
+        if is_cuda:
+            from pathlib import Path
+            import re as _re
+            _cu_paths = set()
+            try:
+                if hasattr(self.fn, 'raw_src'):
+                    _source = ''.join(self.fn.raw_src)
+                else:
+                    _source = ""
+                for _m in _re.finditer(
+                        r'gl\s*\.\s*call\s*\(\s*["\']([^"\']+\.cu)["\']',
+                        _source):
+                    _cu_path = Path(_m.group(1))
+                    if not _cu_path.is_absolute():
+                        _cu_path = Path.cwd() / _cu_path
+                    _cu_path = _cu_path.resolve()
+                    if _cu_path.exists():
+                        _cu_paths.add(str(_cu_path))
+            except Exception:
+                _cu_paths = set()
+
+            _hook = codegen_fns.get("infer_extern_call_result")
+            if _hook is not None:
+                for _cu_path in _cu_paths:
+                    with open(_cu_path) as _f:
+                        _cu_source = _f.read()
+                    _hook.create_and_suspend(_cu_source, context, _cu_path)
+
         module = ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,
                              module_map=module_map, module=module)
         return module

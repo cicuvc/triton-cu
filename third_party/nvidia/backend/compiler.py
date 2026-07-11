@@ -182,6 +182,66 @@ def _serialize_return_types(return_type_map):
     return result
 
 
+# D-01/D-02: Inference hook object exposed via codegen_fns.
+# Created at get_codegen_implementation time with compiler construction
+# params.  make_ir creates suspended CUDACompilers at semantic time;
+# _pre_compile_extern_calls resumes them at the llir stage to emit
+# bitcode without a second clang parse.
+class InferExternCallResult:
+
+    def __init__(self, sm, resource_dir, include_paths):
+        self._sm = sm
+        self._resource_dir = resource_dir
+        self._include_paths = include_paths
+        self._compilers = {}  # libpath -> SuspendedCudaCompiler
+
+    def create_and_suspend(self, source, context, libpath):
+        """Create CUDACompiler, parse+suspend it (parks in HandleTranslationUnit).
+
+        Called at semantic time by Gluon make_ir for each distinct .cu file.
+        The compiler's coroutine is parked waiting for tasks — ASTContext alive.
+        """
+        import triton._C.libtriton.llvm as llvm
+        compiler = llvm.SuspendedCudaCompiler(
+            source, 3, self._sm, self._resource_dir, self._include_paths)
+        compiler.parse(context, "cudamod")
+        self._compilers[libpath] = compiler
+
+    def infer_result(self, func, arg_params, use_fast_math):
+        """Infer the CUDA return type for a function call. (Phase 2 consumer)
+
+        Phase 1: callable but result is not consumed. Raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            "infer_result: return-type inference not available in Phase 1")
+
+    def compile_bitcode(self, libpath, requests):
+        """Resume the suspended compiler and emit device bitcode.
+
+        Called at the llir stage by _pre_compile_extern_calls.
+        Returns (bitcode_bytes, mangled_names_dict, extractor_names_dict, ret_types_list).
+        """
+        compiler = self._compilers.get(libpath)
+        if compiler is None:
+            raise RuntimeError(
+                f"No suspended compiler for {libpath} — "
+                f"must be created by make_ir at semantic time")
+        ok, bitcode, error, results = compiler.compile_bitcode(requests)
+        if not ok:
+            raise RuntimeError(
+                f"In-process CUDA compilation failed for {libpath}: {error}")
+        mangled_names = {}
+        extractor_names = {}
+        ret_types_list = []
+        for symbol, mangled, ret_types, extr_names in results:
+            mangled_names[symbol] = mangled
+            if ret_types:
+                ret_types_list.append((symbol, list(ret_types)))
+            if extr_names:
+                extractor_names[symbol] = list(extr_names)
+        return bitcode, mangled_names, extractor_names, ret_types_list
+
+
 class CUDABackend(BaseBackend):
     instrumentation = None
 
@@ -245,12 +305,31 @@ class CUDABackend(BaseBackend):
 
     def get_codegen_implementation(self, options):
         import triton.language.extra.cuda as cuda
+        import os as _os
         capability = int(self._parse_arch(options.arch))
         codegen_fns = {
             "convert_custom_types":
             cuda.convert_custom_float8_sm80 if capability >= 80 else cuda.convert_custom_float8_sm70, "min_dot_size":
             min_dot_size(self.target)
         }
+
+        # D-01: Build the inference hook object with compiler construction
+        # params.  These mirror _pre_compile_extern_calls setup (minus the
+        # per-libpath source which is not available here).
+        _install_prefix = _os.path.join(
+            _os.path.dirname(__file__), "..", "..", "..",
+            "..", "llvm-project", "install")
+        if not _os.path.exists(_install_prefix):
+            _install_prefix = _os.path.join(_os.path.dirname(__file__), "..")
+        _resource_dir = _os.path.join(_install_prefix, "lib", "clang", "23")
+        _cuda_inc = _os.path.join(_os.path.dirname(__file__), "include")
+        _sm = f"sm_{capability // 10}{capability % 10}"
+        _include_paths = [_cuda_inc,
+                          "/usr/local/cuda-13.1/targets/x86_64-linux/include"]
+
+        _infer_hook = InferExternCallResult(_sm, _resource_dir, _include_paths)
+        self._infer_hook = _infer_hook  # stored for _pre_compile_extern_calls
+        codegen_fns["infer_extern_call_result"] = _infer_hook
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -486,6 +565,20 @@ class CUDABackend(BaseBackend):
             if not llvm.verify_module(llvm_mod):
                 raise RuntimeError("LLVM module verification failed after extern linking")
 
+        # D-07: Per-compile parse-count assertion — guards against
+        # double-parsing.  The delta (parses during THIS compile) must
+        # equal the number of distinct .cu files.  Uses zero-based delta
+        # so the assertion survives multiple compilations in one process
+        # (pytest multi-test).
+        if has_extern_calls:
+            parse_count_delta = metadata.get("__extern_cuda_parse_count__", 0)
+            specs_list = metadata.get("__extern_call_specs__", [])
+            distinct_cu = len(set(s["libpath"] for s in specs_list)) if specs_list else 0
+            assert parse_count_delta == distinct_cu, (
+                f"extern CUDA parse count mismatch: {parse_count_delta} parse(s) "
+                f"for {distinct_cu} distinct .cu file(s) "
+                f"(per-compile delta; must survive multiple compiles in one process)")
+
         # Run optimization
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3,
                              disable_slp_vectorizer=capability == 80)
@@ -521,6 +614,11 @@ class CUDABackend(BaseBackend):
 
         specs_list = _json.loads(json_str)
 
+        # D-07: Per-compile delta — snapshot the parse counter BEFORE any
+        # compilation so the assertion in make_llir works across multiple
+        # compiles in one process (pytest multi-test).
+        _parse_count_before = llvm.get_extern_cuda_parse_count()
+
         install_prefix = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                                       "..", "llvm-project", "install")
         if not os.path.exists(install_prefix):
@@ -529,6 +627,8 @@ class CUDABackend(BaseBackend):
         resource_dir = os.path.join(install_prefix, "lib", "clang", "23")
         cuda_inc = os.path.join(os.path.dirname(__file__), "include")
         sm = f"sm_{capability // 10}{capability % 10}"
+        _include_paths = [cuda_inc,
+                          "/usr/local/cuda-13.1/targets/x86_64-linux/include"]
 
         dtype_to_scalar = {
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
@@ -560,6 +660,44 @@ class CUDABackend(BaseBackend):
         extractor_names = {}  # dict[original_symbol] = list[str]
 
         for libpath, specs in by_libpath.items():
+            # D-05/D-06: Prefer suspended compiler (created by make_ir at
+            # semantic time).  If a suspended compiler exists for this .cu,
+            # resume it via the hook's compile_bitcode — no second parse.
+            _hook = getattr(self, '_infer_hook', None)
+            _suspended = _hook._compilers.get(libpath) if _hook is not None else None
+            if _suspended is not None:
+                requests = []
+                for spec_entry in specs:
+                    symbol = spec_entry["symbol"]
+                    req = llvm.CudaFuncRequest()
+                    req.symbol = symbol
+                    req.use_fast_math = spec_entry.get("use_fast_math", False)
+
+                    param_types = []
+                    for inp in spec_entry["inputs"]:
+                        tp = llvm.TensorParameter()
+                        tp.type = _scalar_type_for(inp["dtype"])
+                        tp.shape = inp["shape"]
+                        tp.layout_shape = inp["shape"]
+                        tp.reg_basis = inp.get("reg_bases", [])
+                        tp.lane_basis = inp.get("lane_bases", [])
+                        tp.warp_basis = inp.get("warp_bases", [])
+                        tp.n_warps = inp.get("num_warps", 1)
+                        param_types.append(tp)
+                    req.param_types = param_types
+                    requests.append(req)
+
+                bitcode, mangled_names_batch, extractor_names_batch, ret_types_list = \
+                    _hook.compile_bitcode(libpath, requests)
+                compiled_bitcodes.append(list(bitcode))
+                mangled_names.update(mangled_names_batch)
+                extractor_names.update(extractor_names_batch)
+                for symbol, ret_types in ret_types_list:
+                    return_type_map[symbol] = ret_types
+                continue  # skip the old compile_cuda_to_module path
+
+            # Fallback: existing compile_cuda_to_module path (for .cu files
+            # not covered by the suspended-compiler pre-scan).
             with open(libpath) as f:
                 source = f.read()
 
@@ -585,8 +723,7 @@ class CUDABackend(BaseBackend):
                 requests.append(req)
 
             ok, bitcode, error, results = llvm.compile_cuda_to_module(
-                llvm_context, source, sm, resource_dir,
-                [cuda_inc, "/usr/local/cuda-13.1/targets/x86_64-linux/include"],
+                llvm_context, source, sm, resource_dir, _include_paths,
                 requests)
 
             if not ok:
@@ -613,6 +750,13 @@ class CUDABackend(BaseBackend):
         metadata["extern_call_bitcodes"] = compiled_bitcodes
         metadata["extern_call_mangled"] = mangled_names
         metadata["extern_call_extractor_names"] = extractor_names
+
+        # D-07: Per-compile delta — store the number of clang parses that
+        # occurred during THIS compile only (zero-based delta, not the live
+        # global counter).  make_llir asserts it equals the distinct .cu count.
+        metadata["__extern_cuda_parse_count__"] = \
+            llvm.get_extern_cuda_parse_count() - _parse_count_before
+        metadata["__extern_call_specs__"] = specs_list
         return True
 
 
