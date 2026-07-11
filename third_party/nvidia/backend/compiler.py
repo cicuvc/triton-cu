@@ -534,10 +534,19 @@ class CUDABackend(BaseBackend):
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
             "f16": llvm.ScalarType.Fp16, "fp16": llvm.ScalarType.Fp16,
             "bf16": llvm.ScalarType.Bf16,
-            "f64": llvm.ScalarType.Fp32, "fp64": llvm.ScalarType.Fp32,
             "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32,
             "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64,
         }
+
+
+        def _scalar_type_for(dtype_str):
+            st = dtype_to_scalar.get(dtype_str)
+            if st is None:
+                if dtype_str in ("f64", "fp64", "float64"):
+                    raise NotImplementedError(
+                        "gl.call() does not support float64; full Fp64 support is out of scope (see FP64-01)")
+                raise ValueError(f"Unsupported dtype: {dtype_str}")
+            return st
 
         # Group by libpath
         by_libpath = {}
@@ -564,7 +573,7 @@ class CUDABackend(BaseBackend):
                 param_types = []
                 for inp in spec_entry["inputs"]:
                     tp = llvm.TensorParameter()
-                    tp.type = dtype_to_scalar.get(inp["dtype"], llvm.ScalarType.Fp32)
+                    tp.type = _scalar_type_for(inp["dtype"])
                     tp.shape = inp["shape"]
                     tp.layout_shape = inp["shape"]
                     tp.reg_basis = inp.get("reg_bases", [])

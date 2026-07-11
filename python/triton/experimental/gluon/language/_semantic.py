@@ -256,6 +256,12 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         _check(isinstance(result_layouts, list),
                lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
 
+        # Backend-agnostic f64 guard — raise before building IR.
+        _f64_err = "gl.call() does not support float64; full Fp64 support is out of scope (see FP64-01)"
+        for a in args:
+            if hasattr(a, 'dtype') and str(a.dtype) in ("fp64", "f64", "float64"):
+                raise NotImplementedError(_f64_err)
+
         first_input = args[0]
         result_types = []
         for lo in result_layouts:
