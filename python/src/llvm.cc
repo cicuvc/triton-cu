@@ -1033,7 +1033,10 @@ void init_triton_llvm(py::module &&m) {
            py::arg("source"), py::arg("opt_level"), py::arg("sm"),
            py::arg("resource_dir"), py::arg("include_paths"))
       .def("parse",
-           &CUDACompiler::PerformParse,
+           [](CUDACompiler &compiler, llvm::LLVMContext &ctx,
+              const std::string &module_name) {
+             compiler.PerformParse(ctx, module_name);
+           },
            py::arg("ctx"), py::arg("module_name"))
       .def("compile_bitcode",
            [](CUDACompiler &compiler,

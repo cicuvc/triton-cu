@@ -190,11 +190,15 @@ def _serialize_return_types(return_type_map):
 class InferExternCallResult:
 
     def __init__(self, sm, resource_dir, include_paths):
+        import triton._C.libtriton.llvm as _llvm
         self._sm = sm
         self._resource_dir = resource_dir
         self._include_paths = include_paths
         self._compilers = {}  # libpath -> SuspendedCudaCompiler
         self._llvm_ctx = None  # Shared LLVMContext (set on first create_and_suspend)
+        # D-07: Snapshot the parse counter at hook-creation time so the
+        # per-compile delta spans both semantic and llir stages.
+        self._parse_count_before = _llvm.get_extern_cuda_parse_count()
 
     def create_and_suspend(self, source, llvm_context, libpath):
         """Create CUDACompiler, parse+suspend it (parks in HandleTranslationUnit).
@@ -624,11 +628,6 @@ class CUDABackend(BaseBackend):
 
         specs_list = _json.loads(json_str)
 
-        # D-07: Per-compile delta — snapshot the parse counter BEFORE any
-        # compilation so the assertion in make_llir works across multiple
-        # compiles in one process (pytest multi-test).
-        _parse_count_before = llvm.get_extern_cuda_parse_count()
-
         # D-05: If the semantic stage already created a shared LLVMContext
         # (via make_ir / InferExternCallResult.create_and_suspend), reuse
         # it so bitcode from suspended compilers links correctly. Otherwise
@@ -770,10 +769,12 @@ class CUDABackend(BaseBackend):
         metadata["extern_call_extractor_names"] = extractor_names
 
         # D-07: Per-compile delta — store the number of clang parses that
-        # occurred during THIS compile only (zero-based delta, not the live
-        # global counter).  make_llir asserts it equals the distinct .cu count.
+        # occurred during THIS compile only (from hook-creation time through
+        # now, spanning both semantic and llir stages).
+        _hook = getattr(self, '_infer_hook', None)
+        _count_before = _hook._parse_count_before if _hook is not None else 0
         metadata["__extern_cuda_parse_count__"] = \
-            llvm.get_extern_cuda_parse_count() - _parse_count_before
+            llvm.get_extern_cuda_parse_count() - _count_before
         metadata["__extern_call_specs__"] = specs_list
         return True
 
