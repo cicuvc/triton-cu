@@ -21,15 +21,15 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ E2E tests: elementwise add, intra-warp shuffle, reduce (shape change via manual `result_layout`), split_add tuple — existing (`test_extern_call.py`)
 - ✓ Frontend↔backend inference seam: `InferExternCallResult` hook via `codegen_fns` + single-parse suspended `CUDACompiler` with parse-counter guard — Validated in Phase 1: Seam & Cleanup
 - ✓ Bundled bug fixes: dead code removed (`compiler.py:510-513`), `f64`/`fp64` raises `NotImplementedError` at both frontend and backend layers (no silent Fp32 coercion) — Validated in Phase 1: Seam & Cleanup
+- ✓ **INFER-01**: CUDA-inferred return **shape** flows into the `ttg.extern_call` result type — Validated in Phase 2: Semantic-Time Inference
+- ✓ **INFER-02**: CUDA-inferred return **dtype** flows into the result type — Validated in Phase 2: Semantic-Time Inference
+- ✓ **INFER-03**: Inference runs at IR-build (semantic) time so op result types stay type-consistent; fixed-layout functions (`reduce`) resolved via `LookupFunctionWithPlaceholderFallback`; hook-absent raises a clear error — Validated in Phase 2: Semantic-Time Inference
+- ✓ **INFER-04**: `result_layout=` remains the requested final layout; `convert_layout` reconciles CUDA-native → user layout — Validated in Phase 2: Semantic-Time Inference
+- ✓ **INFER-05**: Bundled bug fixes (dead code, `f64` coercion guard) — Validated in Phase 2: Semantic-Time Inference
 
 ### Active
 
-- [ ] **INFER-01**: CUDA-inferred return **shape** flows into the `ttg.extern_call` result type (functions returning a different shape than the first arg compile without the user hand-computing shape)
-- [ ] **INFER-02**: CUDA-inferred return **dtype** flows into the result type (functions changing element type compile correctly)
-- [ ] **INFER-03**: Inference runs at IR-build (semantic) time so op result types and all downstream consumers stay type-consistent — no MLIR verification failures
-- [ ] **INFER-04**: `result_layout=` remains as the requested **final** layout; a `convert_layout` reconciles the CUDA-native layout → user layout
-- [ ] **INFER-05**: Bundled bug fixes: remove dead code (`compiler.py:510-513`), decide on `f64`→`fp32` silent coercion guard
-- [ ] **INFER-06**: New E2E test exercising a shape-and-dtype-changing extern call, plus existing 4 tests still pass
+- [ ] **INFER-06**: New E2E test exercising a shape-and-dtype-changing extern call, plus existing 4 tests still pass (Phase 3: Verification)
 
 ### Out of Scope
 
@@ -85,4 +85,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after Phase 1 (Seam & Cleanup) completion*
+*Last updated: 2026-07-11 after Phase 2 (Semantic-Time Inference) completion*
