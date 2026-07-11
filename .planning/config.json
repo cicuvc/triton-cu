@@ -1,0 +1,15 @@
+{
+  "model_profile": "adaptive",
+  "model_overrides": {
+    "gsd-codebase-mapper": "deepseek/deepseek-v4-flash"
+  },
+  "workflow": {
+    "research": false,
+    "plan_check": true,
+    "verifier": true
+  },
+  "mode": "yolo",
+  "granularity": "coarse",
+  "parallelization": false,
+  "commit_docs": true
+}
