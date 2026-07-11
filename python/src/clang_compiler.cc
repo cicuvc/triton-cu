@@ -789,6 +789,106 @@ clang::FunctionDecl *CUDACompiler::LookupFunction(
   return Result;
 }
 
+clang::FunctionDecl *
+CUDACompiler::LookupFunctionWithPlaceholderFallback(
+    const llvm::StringRef &Name,
+    const std::vector<std::variant<ScalarType, TensorParameter>>
+        &ParamTypes) {
+  clang::FunctionDecl *Result = nullptr;
+  TaskQueue.emplace([&](TensorTypeHelpers &helper,
+                        CustomAstConsumer &) {
+    auto &Ctx = helper.Builder.Ctx;
+    auto &SemaRef = helper.Builder.SemaRef;
+
+    auto R = Ctx.getTranslationUnitDecl()->lookup(
+        &Ctx.Idents.get(Name));
+
+    auto SL =
+        SemaRef.getSourceManager().getLocForStartOfFile(
+            SemaRef.getSourceManager().getMainFileID());
+
+    // Build PlaceholderLayout arg types from user ParamTypes.
+    // For each TensorParameter, clone with N_WARPS=0 + empty bases
+    // and build Tensor<T,Shape,PlaceholderLayout> via the BuildTensor
+    // placeholder branch (instantiate=false to avoid Sema crash).
+    llvm::SmallVector<clang::QualType, 4> placeholderArgTypes;
+    clang::QualType elementQualType;
+    bool first = true;
+
+    for (auto &param : ParamTypes) {
+      if (auto *tp = std::get_if<TensorParameter>(&param)) {
+        auto Shape = helper.Builder.buildShape(tp->Shape);
+
+        auto Lookup = Ctx.getTranslationUnitDecl()->lookup(
+            &Ctx.Idents.get("PlaceholderLayout"));
+        if (Lookup.empty())
+          return;
+        auto *RD =
+            llvm::dyn_cast<clang::RecordDecl>(*Lookup.begin());
+        auto PlaceholderQualType = Ctx.getTypeDeclType(
+            static_cast<const clang::TypeDecl *>(RD));
+
+        auto argType = helper.Builder.BuildTensor(
+            getQualTypeFromScalarType(Ctx, tp->Type),
+            Shape.type, PlaceholderQualType,
+            /*instantiate=*/false);
+        placeholderArgTypes.push_back(argType);
+
+        if (first) {
+          elementQualType =
+              getQualTypeFromScalarType(Ctx, tp->Type);
+          first = false;
+        }
+      }
+    }
+
+    if (placeholderArgTypes.empty())
+      return;
+
+    // Build OpaqueValueExpr callArgs.
+    llvm::SmallVector<clang::Expr *, 4> callArgs(
+        placeholderArgTypes.size());
+    for (auto I = 0u; I < placeholderArgTypes.size(); I++)
+      callArgs[I] = new (Ctx) clang::OpaqueValueExpr(
+          SL, placeholderArgTypes[I], clang::VK_LValue);
+
+    // Build explicit TemplateArgumentListInfo with the element type
+    // as the sole explicit template argument.  With all template
+    // params explicit, clang treats the function as non-template for
+    // argument checking → PerformCopyInitialization → implicit
+    // conversions enabled → Tensor(PlaceholderLayout) constructor match.
+    clang::TemplateArgumentListInfo TALI;
+    clang::TemplateArgument TArg(
+        Ctx.getCanonicalType(elementQualType));
+    auto *TSI = Ctx.getTrivialTypeSourceInfo(elementQualType);
+    TALI.addArgument(clang::TemplateArgumentLoc(TArg, TSI));
+
+    // Try deduction with explicit args for each FunctionTemplateDecl.
+    for (auto *D : R) {
+      if (auto *FTD =
+              llvm::dyn_cast<clang::FunctionTemplateDecl>(D)) {
+        clang::sema::TemplateDeductionInfo DI{SL};
+        clang::FunctionDecl *cand = nullptr;
+        auto DeductionResult = SemaRef.DeduceTemplateArguments(
+            FTD, &TALI, callArgs, cand, DI, false, false, false,
+            clang::QualType(), clang::Expr::Classification(),
+            true,
+            [](llvm::ArrayRef<clang::QualType>,
+               bool) { return false; });
+
+        if (DeductionResult ==
+                clang::TemplateDeductionResult::Success &&
+            cand) {
+          Result = cand;
+          return;
+        }
+      }
+    }
+  });
+  InvocationContext->SwitchTo(*CompileExecutionContext);
+  return Result;
+}
+
 llvm::Function *
 CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
   llvm::Function *Result;
@@ -868,6 +968,9 @@ CUDACompiler::inferReturnTypes(
 
     auto *FD =
         this->LookupFunction(req.Symbol, argTypes);
+    if (!FD)
+      FD = this->LookupFunctionWithPlaceholderFallback(
+          req.Symbol, req.ParamTypes);
     if (!FD)
       return {"", "Function lookup failed: " + req.Symbol, {}};
 
