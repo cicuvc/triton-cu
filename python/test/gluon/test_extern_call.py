@@ -58,6 +58,18 @@ def split_add_kernel(x_ptr, y_ptr, sum_ptr, diff_ptr):
     gl.store(diff_ptr + idx, diff_vals)
 
 
+@gluon.jit
+def reduce_f16_kernel(x_ptr, out_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([1, 32], [32, 1], [1, 1], [1, 0])
+    idx = gl.arange(0, 32, layout=gl.SliceLayout(0, layout))[None, :] \
+        + 32 * gl.arange(0, 32, layout=gl.SliceLayout(1, layout))[:, None]
+    x_vals = gl.load(x_ptr + idx)
+    out_idx = gl.arange(0, 32, layout=gl.SliceLayout(1, layout))
+    red_vals = gl.call("python/test/gluon/tt_plugin.cu", "reduce_f16", x_vals,
+                        result_layout=gl.SliceLayout(1, layout))
+    gl.store(out_ptr + out_idx, red_vals)
+
+
 @pytest.mark.parametrize("BLOCK", [512])
 def test_elementwise_add(BLOCK):
     torch.set_default_device('cuda')
@@ -99,6 +111,30 @@ def test_split_add_tuple(BLOCK):
     torch.cuda.synchronize()
     torch.testing.assert_close(out_sum, x + y)
     torch.testing.assert_close(out_diff, x - y)
+
+
+def test_reduce_f16_f32():
+    """f16 -> f32 reduction: verifies shape AND dtype are inferred from CUDA side.
+    Only result_layout is supplied; f32 element type + [32] shape come from inference."""
+    torch.set_default_device('cuda')
+    x = torch.randn((32, 32), dtype=torch.float16)
+    out = torch.empty((32,), dtype=torch.float32)
+    compiled = reduce_f16_kernel[(1,)](x, out, num_warps=1)
+    torch.cuda.synchronize()
+
+    # Numeric check: f16 input, f32 accumulation, relaxed tolerance
+    ref = x.to(torch.float32).sum(1)
+    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+
+    # Inferred-type assertion: prove inference produced f32 + [32] before lowering.
+    # The ttg.extern_call result type encodes the inferred element type + shape.
+    ttgir = compiled.asm["ttgir"]
+    assert "f32" in ttgir, (
+        f"Expected f32 element type in ttg.extern_call result, but got:\n{ttgir}"
+    )
+    assert "tensor<32xf32" in ttgir, (
+        f"Expected tensor<32xf32 result shape in ttg.extern_call, but got:\n{ttgir}"
+    )
 
 
 def test_gl_call_no_inference_hook_raises():

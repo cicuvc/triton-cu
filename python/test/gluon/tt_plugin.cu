@@ -151,7 +151,8 @@ __device__ Tensor<T, Shape<32>, TRes> reduce(const Tensor<T, Shape<32, 32>, TArg
 }
 
 // f16 -> f32 reduction: same layout structure as reduce, different element types
-__device__ Tensor<float, Shape<32>, TRes> reduce_f16(const Tensor<half, Shape<32, 32>, TArg>& Vals){
+template<typename T>
+__device__ Tensor<float, Shape<32>, TRes> reduce_f16(const Tensor<T, Shape<32, 32>, TArg>& Vals){
     Tensor<float, Shape<32>, TRes>  Result;
     Result.data[0] = float{};
     #pragma unroll
