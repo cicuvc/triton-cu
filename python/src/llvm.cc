@@ -1016,6 +1016,52 @@ void init_triton_llvm(py::module &&m) {
       .def_readonly("extractor_mangled_names",
                     &CudaFuncResult::ExtractorMangledNames);
 
+  // D-07: Per-compile parse counter — returns total clang parses across
+  // all compilations in this process. Used for per-compile delta assertion.
+  m.def("get_extern_cuda_parse_count", []() -> int {
+    return getExternCudaParseCount();
+  });
+
+  // D-03/D-05: SuspendedCudaCompiler wraps an already-parsed CUDACompiler
+  // whose coroutine is parked inside HandleTranslationUnit. The Python side
+  // creates it at semantic time (make_ir) and resumes it at the llir stage
+  // (_pre_compile_extern_calls) to emit bitcode without a second parse.
+  py::class_<CUDACompiler>(m, "SuspendedCudaCompiler")
+      .def(py::init<const std::string &, int, const std::string &,
+                     const std::string &,
+                     const std::vector<std::string> &>(),
+           py::arg("source"), py::arg("opt_level"), py::arg("sm"),
+           py::arg("resource_dir"), py::arg("include_paths"))
+      .def("parse",
+           &CUDACompiler::PerformParse,
+           py::arg("ctx"), py::arg("module_name"))
+      .def("compile_bitcode",
+           [](CUDACompiler &compiler,
+              const std::vector<CudaFuncRequest> &requests) -> py::tuple {
+             auto [bitcode, error, results] =
+                 compiler.compileBitcode(requests);
+             if (error.empty()) {
+               py::list pyResults;
+               for (auto &r : results) {
+                 py::list pyRetTypes;
+                 for (auto &tp : r.ReturnTypes)
+                   pyRetTypes.append(py::cast(tp));
+                 py::list pyExtrNames;
+                 for (auto &n : r.ExtractorMangledNames)
+                   pyExtrNames.append(py::str(n));
+                 pyResults.append(
+                     py::make_tuple(r.Symbol, r.MangledName,
+                                     pyRetTypes, pyExtrNames));
+               }
+               return py::make_tuple(true, py::bytes(bitcode),
+                                      py::str(""), pyResults);
+             } else {
+               return py::make_tuple(false, py::none(),
+                                      py::str(error), py::list());
+             }
+           },
+           py::arg("requests"));
+
   m.def("link_extern_libs", [](llvm::Module *dstMod,
                                const std::vector<std::string> &paths) {
     if (paths.empty())
