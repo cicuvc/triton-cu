@@ -87,25 +87,25 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHTYPE-01 | TBD | Pending |
-| SHTYPE-02 | TBD | Pending |
-| SHAST-01 | TBD | Pending |
-| SHAST-02 | TBD | Pending |
-| SHAST-03 | TBD | Pending |
-| SHMLIR-01 | TBD | Pending |
-| SHMLIR-02 | TBD | Pending |
-| SHWIRE-01 | TBD | Pending |
-| SHLOWER-01 | TBD | Pending |
-| SHLOWER-02 | TBD | Pending |
-| SHAPI-01 | TBD | Pending |
-| SHTEST-01 | TBD | Pending |
-| SHTEST-02 | TBD | Pending |
-| SHTEST-03 | TBD | Pending |
+| SHTYPE-01 | Phase 4 | Pending |
+| SHTYPE-02 | Phase 4 | Pending |
+| SHAST-01 | Phase 4 | Pending |
+| SHAST-02 | Phase 4 | Pending |
+| SHAST-03 | Phase 4 | Pending |
+| SHMLIR-01 | Phase 5 | Pending |
+| SHMLIR-02 | Phase 5 | Pending |
+| SHWIRE-01 | Phase 6 | Pending |
+| SHLOWER-01 | Phase 6 | Pending |
+| SHLOWER-02 | Phase 6 | Pending |
+| SHAPI-01 | Phase 6 | Pending |
+| SHTEST-01 | Phase 7 | Pending |
+| SHTEST-02 | Phase 7 | Pending |
+| SHTEST-03 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 14 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 14 ⚠️
+- Mapped to phases: 14 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-12*
