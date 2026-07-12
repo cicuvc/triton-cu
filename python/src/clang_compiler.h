@@ -299,6 +299,8 @@ struct TypeInspector {
   llvm::SmallVector<uint32_t, 4> ParseShapeType(clang::QualType type);
   llvm::SmallVector<uint32_t, 4>
   ParseBasis(const clang::TemplateArgument &Arg);
+  llvm::SmallVector<uint32_t, 4>
+  ParseSharedBasis(const clang::TemplateArgument &Arg);
   LayoutInfo ParseLayoutType(clang::QualType type);
   TensorParameter
   ParseTensorType(clang::ClassTemplateSpecializationDecl *type);

@@ -511,7 +511,9 @@ TypeBuilder::BuildSharedTensor(clang::QualType ElementType,
 // ============================================================
 
 TypeInspector::TypeInspector(clang::ASTContext &Ctx)
-    : Ctx(Ctx), TensorTemplateType(getTemplateDecl(Ctx, "Tensor")) {}
+    : Ctx(Ctx), TensorTemplateType(getTemplateDecl(Ctx, "Tensor")),
+      SharedTensorTemplateType(
+          getTemplateDecl(Ctx, "SharedTensor")) {}
 
 uint32_t TypeInspector::EvaulateConstantTemplateNTTP(
     const clang::TemplateArgument &Arg) {
@@ -551,6 +553,26 @@ TypeInspector::ParseBasis(const clang::TemplateArgument &Arg) {
     for (auto J = 0u; J < Basis.getArraySize(); J++)
       Result.push_back(
           Basis.getArrayInitializedElt(J).getInt().getZExtValue());
+  }
+  return Result;
+}
+
+// SHAST-03: ParseSharedBasis extracts flat basis vectors from an
+// OffsetBases or BlockBases NTTP TemplateArgument. The APValue structure
+// matches BuildBasisGroup: Struct{Dims=Array[N_BASES]{Struct{Dims=Array[RANK]{uint32}}}}
+llvm::SmallVector<uint32_t, 4>
+TypeInspector::ParseSharedBasis(const clang::TemplateArgument &Arg) {
+  auto TPOD =
+      llvm::dyn_cast<clang::TemplateParamObjectDecl>(Arg.getAsDecl());
+  auto &OuterStruct = TPOD->getValue();
+  auto &DimsArray = OuterStruct.getStructField(0);
+  llvm::SmallVector<uint32_t, 8> Result;
+  for (auto I = 0u; I < DimsArray.getArraySize(); I++) {
+    auto &InnerStruct = DimsArray.getArrayInitializedElt(I);
+    auto &InnerArray = InnerStruct.getStructField(0);
+    for (auto J = 0u; J < InnerArray.getArraySize(); J++)
+      Result.push_back(
+          InnerArray.getArrayInitializedElt(J).getInt().getZExtValue());
   }
   return Result;
 }
@@ -598,6 +620,44 @@ TensorParameter TypeInspector::ParseTensorType(
   return tp;
 }
 
+// SHAST-03: ParseSharedTensorType mirrors ParseTensorType but parses
+// SharedTensor<T, Shape<DIMS...>, SharedLinearLayout<OffsetBases{...}, BlockBases{...}, Align>>
+// back to a SharedTensorParameter.
+// Template arg 0: T (scalar type)
+// Template arg 1: Shape<DIMS...>
+// Template arg 2: SharedLinearLayout<OffsetBases, BlockBases, Align>
+//   SharedLinearLayout arg 0: OffsetBases NTTP → ParseSharedBasis
+//   SharedLinearLayout arg 1: BlockBases NTTP → ParseSharedBasis
+//   SharedLinearLayout arg 2: Alignment integral
+SharedTensorParameter TypeInspector::ParseSharedTensorType(
+    clang::ClassTemplateSpecializationDecl *type) {
+  auto ScalarQType = type->getTemplateArgs().get(0).getAsType();
+  auto Shape = ParseShapeType(
+      type->getTemplateArgs().get(1).getAsType());
+
+  // Parse SharedLinearLayout from template arg 2
+  auto LayoutQType = type->getTemplateArgs().get(2).getAsType();
+  auto *LayoutDecl =
+      llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
+          LayoutQType->getAsRecordDecl());
+
+  auto OffsetBasis =
+      ParseSharedBasis(LayoutDecl->getTemplateArgs().get(0));
+  auto BlockBasis =
+      ParseSharedBasis(LayoutDecl->getTemplateArgs().get(1));
+  uint32_t Alignment = EvaulateConstantTemplateNTTP(
+      LayoutDecl->getTemplateArgs().get(2));
+
+  SharedTensorParameter stp;
+  stp.Type = getScalarTypeFromQualType(Ctx, ScalarQType);
+  stp.Shape.assign(Shape.begin(), Shape.end());
+  stp.Layout.OffsetBasis.assign(OffsetBasis.begin(), OffsetBasis.end());
+  stp.Layout.BlockBasis.assign(BlockBasis.begin(), BlockBasis.end());
+  stp.Layout.Alignment = Alignment;
+  stp.Layout.RANK = Shape.size();
+  return stp;
+}
+
 TupleType TypeInspector::ParseTupleType(
     clang::ClassTemplateSpecializationDecl *type) {
   auto TypePacks = type->getTemplateArgs().get(0).getPackAsArray();
@@ -615,6 +675,11 @@ TypeInspector::DispatchTypeParsing(clang::QualType type) {
     if (auto *ClassSpecDecl =
             llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
                 RecordDecl)) {
+      // SHAST-03: SharedTensor type dispatch — must come BEFORE
+      // the TensorTemplateType check to avoid ambiguity.
+      if (ClassSpecDecl->getSpecializedTemplate() ==
+          SharedTensorTemplateType)
+        return ParseSharedTensorType(ClassSpecDecl);
       if (ClassSpecDecl->getSpecializedTemplate() ==
           TensorTemplateType)
         return ParseTensorType(ClassSpecDecl);
