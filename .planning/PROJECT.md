@@ -34,6 +34,11 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 
 - None — v1.0 milestone requirements all validated. Return-type inference for `gl.call()` is feature-complete and verified end-to-end.
 
+**Next Milestone Candidates** (fresh requirements to be defined via `/gsd-new-milestone`):
+- AUTO-01: Make `result_layout=` optional / auto-derived from the CUDA-inferred layout
+- FP64-01: Full `Fp64` support through the entire pipeline
+- Split the 1,396-line `clang_compiler.cc` (tech debt)
+
 ### Out of Scope
 
 - Making `result_layout=` fully optional / auto-derived — deferred; user chose to keep `result_layout` as an explicit final-layout request (decision 2026-07-11)
@@ -65,8 +70,8 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Keep `result_layout` required (not auto-derived) | User wants explicit control of the final layout; smaller blast radius than making it optional | — Pending |
-| Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent; patch-step `convert_layout` cannot change shape/dtype | — Pending |
+| Keep `result_layout` required (not auto-derived) | User wants explicit control of the final layout; smaller blast radius than making it optional | ✓ Good — shipped v1.0; auto-derive deferred to AUTO-01 |
+| Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent; patch-step `convert_layout` cannot change shape/dtype | ✓ Good — validated E2E in v1.0 (`test_reduce_f16_f32`) |
 | Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | ✓ Good — seam built in Phase 1 |
 | Treat CONCERNS.md as partly outdated | Verified in code that the patch step already handles layout + convert_layout; real gap is shape/dtype hard-error | ✓ Good |
 
@@ -88,4 +93,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-11 after Phase 3 (Verification) completion — v1.0 milestone complete: `gl.call()` return-type inference verified E2E on RTX 5090.*
+*Last updated: 2026-07-12 after v1.0 (Return Type Inference) milestone — shipped: `gl.call()` return-type inference verified E2E on RTX 5090 (3 phases, 8 plans, 12/12 requirements validated).*
