@@ -102,7 +102,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Device templates (SharedLinearLayout, SharedTensor in tt_plugin.cu) + C++ structs (SharedLayoutInfo, SharedTensorParameter in clang_compiler.h) + pybind binding (llvm.SharedTensorParameter in llvm.cc)
+- [x] 04-01-PLAN.md — Device templates (SharedLinearLayout, SharedTensor in tt_plugin.cu) + C++ structs (SharedLayoutInfo, SharedTensorParameter in clang_compiler.h) + pybind binding (llvm.SharedTensorParameter in llvm.cc)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

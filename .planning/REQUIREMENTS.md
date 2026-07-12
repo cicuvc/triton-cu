@@ -12,14 +12,14 @@ Requirements for milestone v1.1. Each maps to a roadmap phase. IDs continue the 
 
 New CUDA C++ device-side templates in `python/test/gluon/tt_plugin.cu`, modeled on the existing `TensorLayout`/`Tensor` templates.
 
-- [ ] **SHTYPE-01**: A `SharedLinearLayout` C++ device template exists carrying `offset_bases` + `block_bases` + `alignment`, computing shared-memory byte offsets bit-identical to the MLIR shared linear-layout composition (`gluon_ir.cc:102-103`) — full arbitrary swizzle expressible as a linear basis map
-- [ ] **SHTYPE-02**: A `SharedTensor<dtype, shape, layout>` C++ device template exists (separate template, not `Tensor`) whose backing storage lives in shared memory (addrspace 3) and supports element **read and write**
+- [x] **SHTYPE-01**: A `SharedLinearLayout` C++ device template exists carrying `offset_bases` + `block_bases` + `alignment`, computing shared-memory byte offsets bit-identical to the MLIR shared linear-layout composition (`gluon_ir.cc:102-103`) — full arbitrary swizzle expressible as a linear basis map
+- [x] **SHTYPE-02**: A `SharedTensor<dtype, shape, layout>` C++ device template exists (separate template, not `Tensor`) whose backing storage lives in shared memory (addrspace 3) and supports element **read and write**
 
 ### Clang AST Bridge
 
 Extend the v1.0 clang type-inference infrastructure (`clang_compiler.cc`/`.h`) with a parallel shared-tensor data path.
 
-- [ ] **SHAST-01**: `SharedLayoutInfo` + `SharedTensorParameter` structs carry shared-layout data across the Python/C++ boundary; `CudaFuncRequest::ParamTypes` accepts the `SharedTensorParameter` variant
+- [x] **SHAST-01**: `SharedLayoutInfo` + `SharedTensorParameter` structs carry shared-layout data across the Python/C++ boundary; `CudaFuncRequest::ParamTypes` accepts the `SharedTensorParameter` variant
 - [ ] **SHAST-02**: `TypeBuilder::BuildSharedLinearLayout()` + `BuildSharedTensor()` construct the shared clang AST types from a `SharedTensorParameter` (parallel to `BuildLayout()`/`BuildTensor()`)
 - [ ] **SHAST-03**: `TypeInspector` parses a `SharedTensor<...>&` clang type back to a `SharedTensorParameter` (`DispatchTypeParsing` branch), and `FunctionResolver` resolves device functions with `SharedTensor&` parameters via Sema template deduction — integrating shared args into the existing return-type inference flow
 
@@ -87,9 +87,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHTYPE-01 | Phase 4 | Pending |
-| SHTYPE-02 | Phase 4 | Pending |
-| SHAST-01 | Phase 4 | Pending |
+| SHTYPE-01 | Phase 4 | Complete |
+| SHTYPE-02 | Phase 4 | Complete |
+| SHAST-01 | Phase 4 | Complete |
 | SHAST-02 | Phase 4 | Pending |
 | SHAST-03 | Phase 4 | Pending |
 | SHMLIR-01 | Phase 5 | Pending |
@@ -103,6 +103,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHTEST-03 | Phase 7 | Pending |
 
 **Coverage:**
+
 - v1.1 requirements: 14 total
 - Mapped to phases: 14 ✓
 - Unmapped: 0
