@@ -98,6 +98,131 @@ struct Tensor{
     }
 };
 
+// ========================= SHARED MEMORY TEMPLATES =============================
+// Shared memory interop: SharedLinearLayout + SharedTensor device templates.
+// These mirror the distributed Layout/Tensor pattern but operate on byte offsets
+// into shared memory (addrspace 3) instead of register indices.
+
+// Helper: extracts Shape<DIMS...> template args into a constexpr array
+template<typename ShapeType>
+struct ShapeDims;
+template<uint32_t... DIMS>
+struct ShapeDims<Shape<DIMS...>> {
+    static constexpr uint32_t RANK = sizeof...(DIMS);
+    static constexpr uint32_t All[RANK] = {DIMS...};
+};
+
+// OffsetBases: NTTP carrier for offset basis rows (D-01)
+// Each row is an IntTuple<RANK> — the per-bit logical-dim coordinate offset.
+// N_BASES = number of basis rows (bits in the flat index).
+template<uint32_t RANK, uint32_t N_BASES>
+struct OffsetBases {
+    static constexpr uint32_t rank = RANK;
+    static constexpr uint32_t n_bases = N_BASES;
+    IntTuple<RANK> Dims[N_BASES];
+    constexpr OffsetBases() = default;
+    constexpr OffsetBases(std::initializer_list<IntTuple<RANK>> basis) {
+        auto it = basis.begin();
+        for (uint32_t i = 0; i < N_BASES && it != basis.end(); ++i, ++it)
+            Dims[i] = *it;
+    }
+};
+
+// BlockBases: NTTP carrier for block basis rows (D-02)
+// Identical structure to OffsetBases but a separate type for type-safety.
+template<uint32_t RANK, uint32_t N_BASES>
+struct BlockBases {
+    static constexpr uint32_t rank = RANK;
+    static constexpr uint32_t n_bases = N_BASES;
+    IntTuple<RANK> Dims[N_BASES];
+    constexpr BlockBases() = default;
+    constexpr BlockBases(std::initializer_list<IntTuple<RANK>> basis) {
+        auto it = basis.begin();
+        for (uint32_t i = 0; i < N_BASES && it != basis.end(); ++i, ++it)
+            Dims[i] = *it;
+    }
+};
+
+// SharedLinearLayout: maps a flat bit-space index to per-dim logical coordinates.
+// D-06: evaluate() fully implemented. blockIndices accepted but unused (Phase 4: {}).
+// D-07 parity contract: output MUST be bit-identical to MLIR LinearLayout({offsetBases,blockBases},outDims).apply()
+template<auto OB, auto BB, uint32_t Alignment>
+struct SharedLinearLayout {
+    using OBType = decltype(OB);
+    using BBType = decltype(BB);
+    static constexpr uint32_t RANK = OBType::rank;
+    static constexpr uint32_t Align = Alignment;
+
+    // Mirrors BasisGroup::evaluate() pattern (tt_plugin.cu:45-49):
+    // For each bit position i, if bit i of flatIndex is set, XOR-add OB.Dims[i].
+    // Block contribution is zero in Phase 4 (blockIndices = {}); parameter present
+    // for future phases with block-index-dependent layouts.
+    static constexpr IntTuple<RANK> evaluate(uint32_t flatIndex, const IntTuple<RANK>& /*blockIndices*/) {
+        auto offsetContribution = ([&]<size_t...IDX>(std::index_sequence<IDX...>){
+            return ((((flatIndex >> IDX) & 0x1) ? OB.Dims[IDX] : IntTuple<RANK>{}) + ... + IntTuple<RANK>{});
+        })(std::make_index_sequence<OBType::n_bases>{});
+        // Phase 4: block contribution is always zero
+        return offsetContribution;
+    }
+};
+
+// SharedTensor: aliases external shared memory (D-03).
+// T data[] is a zero-length array — lowers to ptr addrspace(3) in Phase 6.
+// operator() takes logical indices, flattens via Shape strides, evaluates
+// SharedLinearLayout to get byte offset, and returns T& (read+write, D-04).
+template<typename T, typename TShape, typename TLayout>
+struct SharedTensor {
+    void* __shared_memory_base;  // sentinel: satisfies C++ struct-inhabitant rule
+                                 // for flexible array members (required by nvcc).
+                                 // This struct is never allocated — it solely
+                                 // aliases external shared memory through data[].
+    T data[];  // zero-length — aliases external shared memory (D-03)
+
+    // D-04: variadic operator() accepting RANK logical indices, returning T&.
+    // Flattening convention: row-major (outer dim first, inner dim varies fastest).
+    // For Shape<D0> (Rank 1): flatIndex = indices[0]
+    // For Shape<D0, D1> (Rank 2): flatIndex = indices[0] * D1 + indices[1]
+    __device__ T& operator()(auto... indices) {
+        static_assert(sizeof...(indices) == TShape::RANK, "number of indices must match tensor rank");
+        constexpr auto dims = ShapeDims<TShape>::All;
+        uint32_t idxs[TShape::RANK] = {static_cast<uint32_t>(indices)...};
+
+        // Row-major flatten: flatIndex = sum(indices[k] * stride[k])
+        uint32_t flatIndex = 0;
+        for (int d = 0; d < TShape::RANK; ++d) {
+            uint32_t stride = 1;
+            for (int k = d + 1; k < TShape::RANK; ++k)
+                stride *= dims[k];
+            flatIndex += idxs[d] * stride;
+        }
+
+        auto logicalOffset = TLayout::evaluate(flatIndex, IntTuple<TShape::RANK>{});
+        // Convert logical offset to 1D byte offset: dot(logicalOffset, byteStrides)
+        // where byteStrides[k] = product(dims[k+1..N-1]) * sizeof(T)
+        uint32_t byteOffset = 0;
+        for (int d = 0; d < TShape::RANK; ++d) {
+            uint32_t byteStride = sizeof(T);
+            for (int k = d + 1; k < TShape::RANK; ++k)
+                byteStride *= dims[k];
+            byteOffset += logicalOffset.Dims[d] * byteStride;
+        }
+        return data[byteOffset];
+    }
+};
+
+// Test device functions (D-05 exercise) — consumed by Plan 04-03 pytest harness.
+
+template<typename T, uint32_t N, typename TLayout>
+__device__ void write_shared_1d(SharedTensor<T, Shape<N>, TLayout>& shm, T val) {
+    shm(0) = val;
+}
+
+template<typename T, typename TLayout>
+__device__ void process_shared_2d(SharedTensor<T, Shape<32, 16>, TLayout>& shm, T scale) {
+    for (int i = 0; i < 32; i++)
+        for (int j = 0; j < 16; j++)
+            shm(i, j) = shm(i, j) * scale;
+}
 
 // ========================= END OF DEFINITIONS =============================
 
