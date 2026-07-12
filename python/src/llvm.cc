@@ -1002,6 +1002,38 @@ void init_triton_llvm(py::module &&m) {
           },
           py::return_value_policy::reference_internal);
 
+  py::class_<SharedTensorParameter>(m, "SharedTensorParameter")
+      .def(py::init<>())
+      .def_readwrite("type", &SharedTensorParameter::Type)
+      .def_readwrite("shape", &SharedTensorParameter::Shape)
+      .def_property(
+          "offset_basis",
+          [](SharedTensorParameter &stp) -> std::vector<uint32_t> & {
+            return stp.Layout.OffsetBasis;
+          },
+          [](SharedTensorParameter &stp, std::vector<uint32_t> v) {
+            stp.Layout.OffsetBasis = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "block_basis",
+          [](SharedTensorParameter &stp) -> std::vector<uint32_t> & {
+            return stp.Layout.BlockBasis;
+          },
+          [](SharedTensorParameter &stp, std::vector<uint32_t> v) {
+            stp.Layout.BlockBasis = std::move(v);
+          },
+          py::return_value_policy::reference_internal)
+      .def_property(
+          "alignment",
+          [](SharedTensorParameter &stp) -> uint32_t & {
+            return stp.Layout.Alignment;
+          },
+          [](SharedTensorParameter &stp, uint32_t v) {
+            stp.Layout.Alignment = v;
+          },
+          py::return_value_policy::reference_internal);
+
   py::class_<CudaFuncRequest>(m, "CudaFuncRequest")
       .def(py::init<>())
       .def_readwrite("symbol", &CudaFuncRequest::Symbol)
