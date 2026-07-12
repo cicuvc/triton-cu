@@ -20,8 +20,8 @@ New CUDA C++ device-side templates in `python/test/gluon/tt_plugin.cu`, modeled 
 Extend the v1.0 clang type-inference infrastructure (`clang_compiler.cc`/`.h`) with a parallel shared-tensor data path.
 
 - [x] **SHAST-01**: `SharedLayoutInfo` + `SharedTensorParameter` structs carry shared-layout data across the Python/C++ boundary; `CudaFuncRequest::ParamTypes` accepts the `SharedTensorParameter` variant
-- [ ] **SHAST-02**: `TypeBuilder::BuildSharedLinearLayout()` + `BuildSharedTensor()` construct the shared clang AST types from a `SharedTensorParameter` (parallel to `BuildLayout()`/`BuildTensor()`)
-- [ ] **SHAST-03**: `TypeInspector` parses a `SharedTensor<...>&` clang type back to a `SharedTensorParameter` (`DispatchTypeParsing` branch), and `FunctionResolver` resolves device functions with `SharedTensor&` parameters via Sema template deduction — integrating shared args into the existing return-type inference flow
+- [x] **SHAST-02**: `TypeBuilder::BuildSharedLinearLayout()` + `BuildSharedTensor()` construct the shared clang AST types from a `SharedTensorParameter` (parallel to `BuildLayout()`/`BuildTensor()`)
+- [x] **SHAST-03**: `TypeInspector` parses a `SharedTensor<...>&` clang type back to a `SharedTensorParameter` (`DispatchTypeParsing` branch), and `FunctionResolver` resolves device functions with `SharedTensor&` parameters via Sema template deduction — integrating shared args into the existing return-type inference flow
 
 ### MLIR Op & Spec Extraction
 
@@ -90,8 +90,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHTYPE-01 | Phase 4 | Complete |
 | SHTYPE-02 | Phase 4 | Complete |
 | SHAST-01 | Phase 4 | Complete |
-| SHAST-02 | Phase 4 | Pending |
-| SHAST-03 | Phase 4 | Pending |
+| SHAST-02 | Phase 4 | Complete |
+| SHAST-03 | Phase 4 | Complete |
 | SHMLIR-01 | Phase 5 | Pending |
 | SHMLIR-02 | Phase 5 | Pending |
 | SHWIRE-01 | Phase 6 | Pending |
