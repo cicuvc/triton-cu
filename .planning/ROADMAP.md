@@ -82,7 +82,13 @@ Plans:
   3. `TypeInspector::DispatchTypeParsing()` parses a `SharedTensor<...>&` AST node back to a `SharedTensorParameter` with scalar type, shape dims, and layout bases matching the original input — round-trip verification passes
   4. `FunctionResolver::LookupFunction()` resolves a `__device__` template function with `SharedTensor&` parameters via clang Sema template argument deduction — no substitution failure or ambiguity error
   5. Python `llvm.SharedTensorParameter` pybind11 class is importable and constructable with `.type`, `.shape`, `.offset_bases`, `.block_bases`, `.alignment` attributes
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Device templates (SharedLinearLayout, SharedTensor in tt_plugin.cu) + C++ structs (SharedLayoutInfo, SharedTensorParameter in clang_compiler.h) + pybind binding (llvm.SharedTensorParameter in llvm.cc)
+- [ ] 04-02-PLAN.md — Clang AST implementations: TypeBuilder::BuildSharedLinearLayout/BuildSharedTensor, TypeInspector::ParseSharedTensorType/DispatchTypeParsing, CUDACompiler::BuildSharedTensor + variant dispatch
+- [ ] 04-03-PLAN.md — GPU-free pytest harness: round-trip verification, FunctionResolver test, D-07 swizzle-parity test
+
 **UI hint**: no
 
 ### Phase 5: MLIR Op Relaxation + Spec Extraction
@@ -131,7 +137,7 @@ Plans:
 | 1. Seam & Cleanup | v1.0 | 2/2 | Complete | 2026-07-11 |
 | 2. Semantic-Time Inference | v1.0 | 5/5 | Complete | 2026-07-11 |
 | 3. Verification | v1.0 | 1/1 | Complete | 2026-07-11 |
-| 4. C++ Templates + Clang AST Foundation | v1.1 | 0/TBD | Not started | - |
+| 4. C++ Templates + Clang AST Foundation | v1.1 | 0/3 | Not started | - |
 | 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 0/TBD | Not started | - |
 | 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 0/TBD | Not started | - |
 | 7. E2E Verification | v1.1 | 0/TBD | Not started | - |
