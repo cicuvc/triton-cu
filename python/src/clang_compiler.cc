@@ -450,7 +450,8 @@ TupleType TypeInspector::ParseTupleType(
   return Result;
 }
 
-std::variant<std::nullptr_t, TensorParameter, TupleType>
+std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,
+             TupleType>
 TypeInspector::DispatchTypeParsing(clang::QualType type) {
   if (auto *RecordDecl = type->getAsRecordDecl()) {
     if (auto *ClassSpecDecl =
@@ -792,7 +793,8 @@ clang::FunctionDecl *CUDACompiler::LookupFunction(
 clang::FunctionDecl *
 CUDACompiler::LookupFunctionWithPlaceholderFallback(
     const llvm::StringRef &Name,
-    const std::vector<std::variant<ScalarType, TensorParameter>>
+    const std::vector<std::variant<ScalarType, TensorParameter,
+                                   SharedTensorParameter>>
         &ParamTypes) {
   clang::FunctionDecl *Result = nullptr;
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
@@ -906,11 +908,13 @@ CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
   return Result;
 }
 
-std::variant<std::nullptr_t, TensorParameter, TupleType>
+std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,
+             TupleType>
 CUDACompiler::EvaluateFunctionReturnType(
     clang::FunctionDecl *FD) {
-  std::variant<std::nullptr_t, TensorParameter, TupleType> Result =
-      nullptr;
+  std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,
+               TupleType>
+      Result = nullptr;
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
                         CustomAstConsumer &) {
     Result = helper.Inspector.DispatchTypeParsing(

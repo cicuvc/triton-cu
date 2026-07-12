@@ -134,14 +134,35 @@ struct LayoutInfo {
   uint32_t N_WARPS = 0;
 };
 
+// SHAST-01: SharedLinearLayout info — flat representation matching
+// the MLIR SharedLinearEncodingAttr → Python layoutToGluon path
+// (gluon_ir.cc:240-242). OffsetBasis/BlockBasis are flat vectors of
+// [row0_e0, row0_e1, ..., row1_e0, row1_e1, ...] where each row
+// has RANK elements.
+struct SharedLayoutInfo {
+  uint32_t RANK = 0;
+  std::vector<uint32_t> OffsetBasis; // flat: RANK elements per row
+  std::vector<uint32_t> BlockBasis;  // flat (may be empty for v1.1)
+  uint32_t Alignment = 16;
+};
+
 struct TensorParameter {
   ScalarType Type;
   std::vector<uint32_t> Shape;
   LayoutInfo Layout;
 };
 
+// SHAST-01: SharedTensorParameter mirrors TensorParameter but uses
+// SharedLayoutInfo instead of LayoutInfo.
+struct SharedTensorParameter {
+  ScalarType Type;
+  std::vector<uint32_t> Shape;
+  SharedLayoutInfo Layout;
+};
+
 struct TupleType {
-  std::vector<std::variant<std::nullptr_t, TensorParameter, TupleType>>
+  std::vector<std::variant<std::nullptr_t, TensorParameter,
+                           SharedTensorParameter, TupleType>>
       Types;
 };
 
@@ -164,7 +185,8 @@ struct LayoutFactoryContext {
 
 struct CudaFuncRequest {
   std::string Symbol;
-  std::vector<std::variant<ScalarType, TensorParameter>> ParamTypes;
+  std::vector<std::variant<ScalarType, TensorParameter, SharedTensorParameter>>
+      ParamTypes;
   bool UseFastMath = false;
 };
 
@@ -229,6 +251,8 @@ struct TypeBuilder {
   clang::ClassTemplateDecl *IntTupleTemplateType;
   clang::ClassTemplateDecl *IntsTemplateType;
   clang::ClassTemplateDecl *TensorTemplateType;
+  clang::ClassTemplateDecl *SharedLinearLayoutTemplateType = nullptr;
+  clang::ClassTemplateDecl *SharedTensorTemplateType = nullptr;
 
   TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S);
   clang::TemplateArgument mkIntegralArgUint32(uint32_t V);
@@ -254,6 +278,10 @@ struct TypeBuilder {
                               clang::QualType ShapeType,
                               clang::QualType LayoutType,
                               bool instantiate = true);
+  clang::QualType BuildSharedLinearLayout(const SharedLayoutInfo &info);
+  clang::QualType BuildSharedTensor(clang::QualType ElementType,
+                                    clang::QualType ShapeType,
+                                    clang::QualType LayoutType);
 };
 
 // ============================================================
@@ -263,6 +291,7 @@ struct TypeBuilder {
 struct TypeInspector {
   clang::ASTContext &Ctx;
   clang::ClassTemplateDecl *TensorTemplateType;
+  clang::ClassTemplateDecl *SharedTensorTemplateType = nullptr;
 
   TypeInspector(clang::ASTContext &Ctx);
   uint32_t
@@ -273,9 +302,12 @@ struct TypeInspector {
   LayoutInfo ParseLayoutType(clang::QualType type);
   TensorParameter
   ParseTensorType(clang::ClassTemplateSpecializationDecl *type);
+  SharedTensorParameter
+  ParseSharedTensorType(clang::ClassTemplateSpecializationDecl *type);
   TupleType
   ParseTupleType(clang::ClassTemplateSpecializationDecl *type);
-  std::variant<std::nullptr_t, TensorParameter, TupleType>
+  std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,
+               TupleType>
   DispatchTypeParsing(clang::QualType type);
 };
 
@@ -356,10 +388,12 @@ struct CUDACompiler {
   clang::FunctionDecl *
   LookupFunctionWithPlaceholderFallback(
       const llvm::StringRef &Name,
-      const std::vector<std::variant<ScalarType, TensorParameter>>
+      const std::vector<std::variant<ScalarType, TensorParameter,
+                                     SharedTensorParameter>>
           &ParamTypes);
 
-  std::variant<std::nullptr_t, TensorParameter, TupleType>
+  std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,
+               TupleType>
   EvaluateFunctionReturnType(clang::FunctionDecl *FD);
   llvm::Function *InstantiationFunction(clang::FunctionDecl *);
   std::unique_ptr<llvm::Module> EmitFinalModule();
