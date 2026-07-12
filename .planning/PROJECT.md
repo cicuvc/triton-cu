@@ -1,8 +1,21 @@
-# triton-cu: Return Type Inference for gl.call()
+# triton-cu: CUDA C++ Interop for gl.call()
 
 ## What This Is
 
-triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds in-process CUDA C++ interop via `gl.call()` — Gluon kernels can call `__device__` template functions from `.cu` files, JIT-compiled through clang CodeGen and linked into the kernel at compile time. This project completes the **return-type inference** feature so `gl.call()` returns tensors with the CUDA-side-inferred element type, shape, and layout instead of naively copying them from the first argument.
+triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds in-process CUDA C++ interop via `gl.call()` — Gluon kernels can call `__device__` template functions from `.cu` files, JIT-compiled through clang CodeGen and linked into the kernel at compile time. v1.0 completed **return-type inference** so `gl.call()` returns tensors with the CUDA-side-inferred element type, shape, and layout. v1.1 extends the interop surface to **shared memory**: Gluon `shared_memory_descriptor` buffers can be passed into device functions as a new `SharedTensor<dtype, shape, layout>&` parameter type.
+
+## Current Milestone: v1.1 Shared Memory Interop
+
+**Goal:** Let Gluon kernels pass a `shared_memory_descriptor` into a CUDA C++ `__device__` function via `gl.call()` as a new `SharedTensor<dtype, shape, layout>&` parameter that maps to shared memory, backed by a new general C++ `SharedLinearLayout` representation, with correct MLIR memref lowering and shared (addrspace 3) address-space conversion.
+
+**Target features:**
+- New C++ `SharedTensor<dtype, shape, layout>&` device-side parameter type (mutable reference → read + write into shared memory)
+- New C++ `SharedLinearLayout` representation (offset_bases + block_bases + alignment; full arbitrary shape/stride/swizzle) — distinct from the distributed `Layout`, modeled on the existing C++ `Layout` template
+- Frontend `gl.call()` accepts `shared_memory_descriptor` arguments; type round-trips to `SharedTensor` in the clang AST
+- MLIR lowering: shared buffer represented as a `memref`, correct addrspace-3 pointer conversion, with load and store
+- Integration with the v1.0 return-type inference machinery (`TypeInspector`/`FunctionResolver` recognize `SharedTensor<T,Shape,SharedLinearLayout>`)
+
+**Scope boundary:** `SharedTensor` is argument-only this milestone; returning a `shared_memory_descriptor` result from `gl.call()` is deferred.
 
 ## Core Value
 
@@ -32,15 +45,22 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 
 ### Active
 
-- None — v1.0 milestone requirements all validated. Return-type inference for `gl.call()` is feature-complete and verified end-to-end.
+**Milestone v1.1 (Shared Memory Interop)** — requirements defined in `.planning/REQUIREMENTS.md`:
+- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write)
+- New C++ `SharedLinearLayout` representation (offset/block bases + alignment; full swizzle)
+- `shared_memory_descriptor` ↔ `SharedTensor` type round-trip through clang AST
+- MLIR memref lowering with addrspace-3 conversion (load + store)
+- Integration with the v1.0 return-type inference machinery
 
-**Next Milestone Candidates** (fresh requirements to be defined via `/gsd-new-milestone`):
+**Deferred / future candidates:**
+- Return a `shared_memory_descriptor` result from `gl.call()` (shared-memory return type)
 - AUTO-01: Make `result_layout=` optional / auto-derived from the CUDA-inferred layout
 - FP64-01: Full `Fp64` support through the entire pipeline
 - Split the 1,396-line `clang_compiler.cc` (tech debt)
 
 ### Out of Scope
 
+- Returning a `shared_memory_descriptor` from `gl.call()` (shared-memory result type) — deferred to a future milestone; v1.1 is argument-only (decision 2026-07-12)
 - Making `result_layout=` fully optional / auto-derived — deferred; user chose to keep `result_layout` as an explicit final-layout request (decision 2026-07-11)
 - Full `Fp64` support through the pipeline — separate effort; only a guard/decision is in scope here
 - Refactoring the coroutine/ABI machinery (x86-64-only `X64SysVABI`, stack-dangling lambda captures) — fragile but out of scope
@@ -74,6 +94,8 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 | Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent; patch-step `convert_layout` cannot change shape/dtype | ✓ Good — validated E2E in v1.0 (`test_reduce_f16_f32`) |
 | Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | ✓ Good — seam built in Phase 1 |
 | Treat CONCERNS.md as partly outdated | Verified in code that the patch step already handles layout + convert_layout; real gap is shape/dtype hard-error | ✓ Good |
+| SharedTensor is argument-only for v1.1 | Returning shared memory is a larger scope; passing shared buffers into device fns covers the primary use case | — Pending |
+| New C++ SharedLinearLayout distinct from distributed Layout | Shared memory addressing (offset/block bases + swizzle) differs from distributed reg/lane/warp bases; needs its own representation | — Pending |
 
 ## Evolution
 
@@ -93,4 +115,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-12 after v1.0 (Return Type Inference) milestone — shipped: `gl.call()` return-type inference verified E2E on RTX 5090 (3 phases, 8 plans, 12/12 requirements validated).*
+*Last updated: 2026-07-12 — started milestone v1.1 (Shared Memory Interop): pass `shared_memory_descriptor` into CUDA device fns via `SharedTensor<dtype,shape,layout>&`, new C++ `SharedLinearLayout`, memref addrspace-3 lowering.*
