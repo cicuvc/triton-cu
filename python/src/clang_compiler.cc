@@ -132,7 +132,10 @@ TypeBuilder::TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S)
       LayoutFactoryTemplateType(getTemplateDecl(Ctx, "TensorLayout")),
       IntTupleTemplateType(getTemplateDecl(Ctx, "IntTuple")),
       IntsTemplateType(getTemplateDecl(Ctx, "Ints")),
-      TensorTemplateType(getTemplateDecl(Ctx, "Tensor")) {}
+      TensorTemplateType(getTemplateDecl(Ctx, "Tensor")),
+      SharedLinearLayoutTemplateType(
+          getTemplateDecl(Ctx, "SharedLinearLayout")),
+      SharedTensorTemplateType(getTemplateDecl(Ctx, "SharedTensor")) {}
 
 clang::TemplateArgument TypeBuilder::mkIntegralArgUint32(uint32_t V) {
   return clang::TemplateArgument(Ctx, llvm::APSInt(llvm::APInt(32, V)),
@@ -303,6 +306,132 @@ clang::QualType TypeBuilder::BuildLayout(
       specArgs->asArray(), Ctx.getCanonicalTagType(Spec));
 }
 
+// SHAST-02: BuildSharedLinearLayout constructs a clang
+// SharedLinearLayout<OffsetBases{...}, BlockBases{...}, Align> type
+// from a SharedLayoutInfo. The OffsetBases/BlockBases carriers are
+// top-level NTTP structs (D-01) with IntTuple<RANK> arrays — the APValue
+// construction pattern mirrors BuildBasisGroup (lines 261-282).
+clang::QualType
+TypeBuilder::BuildSharedLinearLayout(const SharedLayoutInfo &info) {
+  uint32_t RANK = info.RANK;
+  if (RANK == 0)
+    return clang::QualType();
+
+  uint32_t N_OFFSET =
+      info.OffsetBasis.empty() ? 0 : info.OffsetBasis.size() / RANK;
+  uint32_t N_BLOCK =
+      info.BlockBasis.empty() ? 0 : info.BlockBasis.size() / RANK;
+
+  clang::ClassTemplateDecl *OffsetBasesTmpl =
+      getTemplateDecl(Ctx, "OffsetBases");
+  clang::ClassTemplateDecl *BlockBasesTmpl =
+      getTemplateDecl(Ctx, "BlockBases");
+
+  // Build an OffsetBases<RANK,N> or BlockBases<RANK,N> NTTP value.
+  // The APValue structure mirrors BuildBasisGroup: the carrier is a
+  // struct with one field (Dims = IntTuple<RANK>[N_BASES]), and each
+  // IntTuple<RANK> is a struct with one field (Dims = uint32_t[RANK]).
+  auto buildBasisCarrier =
+      [&](clang::ClassTemplateDecl *Tmpl, uint32_t NBases,
+          const llvm::SmallVectorImpl<uint32_t> &vecs)
+      -> std::pair<std::optional<clang::TemplateArgument>,
+                   clang::ClassTemplateSpecializationDecl *> {
+    auto SL = Tmpl->getLocation();
+
+    // Create the OffsetBases<RANK,NBases> (or BlockBases<RANK,NBases>)
+    // specialization.
+    auto RkArg = mkIntegralArgUint32(RANK);
+    auto NBArg = mkIntegralArgUint32(NBases);
+    auto *tmplArgs =
+        clang::TemplateArgumentList::CreateCopy(Ctx, {RkArg, NBArg});
+    void *ins = nullptr;
+    clang::ClassTemplateSpecializationDecl *S;
+    if (!(S = Tmpl->findSpecialization(tmplArgs->asArray(), ins))) {
+      S = clang::ClassTemplateSpecializationDecl::Create(
+          Ctx, clang::TagTypeKind::Struct,
+          Ctx.getTranslationUnitDecl(), SL, SL, Tmpl,
+          tmplArgs->asArray(), false, nullptr);
+      Tmpl->AddSpecialization(S, ins);
+    }
+
+    clang::QualType CarrierType = Ctx.getTagType(
+        clang::ElaboratedTypeKeyword::None, std::nullopt, S, false);
+
+    // Build APValue: Struct{Array[NBases]{Struct{Array[RANK]{uint32, ...}}}}
+    using clang::APValue;
+    if (NBases == 0) {
+      APValue val(APValue::UninitStruct(), 0u, 1u);
+      val.getStructField(0) =
+          APValue(APValue::UninitArray(), 0u, 0u);
+      auto *TPOD =
+          Ctx.getTemplateParamObjectDecl(CarrierType, val);
+      return {clang::TemplateArgument(
+                  TPOD, Ctx.getCanonicalType(CarrierType)),
+              S};
+    }
+
+    llvm::SmallVector<APValue, 4> Elts(NBases);
+    for (unsigned i = 0; i < NBases; ++i) {
+      Elts[i] = APValue(APValue::UninitStruct(), 0u, 1u);
+      Elts[i].getStructField(0) =
+          APValue(APValue::UninitArray(), RANK, RANK);
+      for (unsigned r = 0; r < RANK; ++r)
+        Elts[i].getStructField(0).getArrayInitializedElt(r) =
+            APValue(llvm::APSInt(
+                llvm::APInt(32, vecs[i * RANK + r], false)));
+    }
+    APValue val(APValue::UninitStruct(), 0u, 1u);
+    val.getStructField(0) =
+        APValue(APValue::UninitArray(), NBases, NBases);
+    for (unsigned i = 0; i < NBases; ++i)
+      val.getStructField(0).getArrayInitializedElt(i) =
+          std::move(Elts[i]);
+
+    auto *TPOD = Ctx.getTemplateParamObjectDecl(CarrierType, val);
+    return {clang::TemplateArgument(
+                TPOD, Ctx.getCanonicalType(CarrierType)),
+            S};
+  };
+
+  // Build OffsetBases NTTP from info.OffsetBasis (flat vector).
+  llvm::SmallVector<uint32_t, 4> obVecs(info.OffsetBasis.begin(),
+                                        info.OffsetBasis.end());
+  auto ObResult = buildBasisCarrier(OffsetBasesTmpl, N_OFFSET, obVecs);
+
+  // Build BlockBases NTTP from info.BlockBasis (flat vector).
+  llvm::SmallVector<uint32_t, 4> bbVecs(info.BlockBasis.begin(),
+                                        info.BlockBasis.end());
+  auto BbResult = buildBasisCarrier(BlockBasesTmpl, N_BLOCK, bbVecs);
+
+  if (!SharedLinearLayoutTemplateType)
+    return clang::QualType();
+
+  // Build SharedLinearLayout<OffsetBases, BlockBases, Alignment>
+  auto SL = SharedLinearLayoutTemplateType->getLocation();
+  auto *layoutArgs = clang::TemplateArgumentList::CreateCopy(
+      Ctx, {ObResult.first.value(), BbResult.first.value(),
+            mkIntegralArgUint32(info.Alignment)});
+
+  void *ins = nullptr;
+  clang::ClassTemplateSpecializationDecl *LayoutSpec;
+  if (!(LayoutSpec =
+            SharedLinearLayoutTemplateType->findSpecialization(
+                layoutArgs->asArray(), ins))) {
+    LayoutSpec = clang::ClassTemplateSpecializationDecl::Create(
+        Ctx, clang::TagTypeKind::Struct,
+        Ctx.getTranslationUnitDecl(), SL, SL,
+        SharedLinearLayoutTemplateType, layoutArgs->asArray(),
+        false, nullptr);
+    SharedLinearLayoutTemplateType->AddSpecialization(LayoutSpec, ins);
+  }
+
+  return Ctx.getTemplateSpecializationType(
+      clang::ElaboratedTypeKeyword::Struct,
+      clang::TemplateName(SharedLinearLayoutTemplateType),
+      layoutArgs->asArray(), layoutArgs->asArray(),
+      Ctx.getCanonicalTagType(LayoutSpec));
+}
+
 clang::QualType TypeBuilder::BuildInts(uint32_t N) {
   auto TypeArg = mkIntegralArgUint32(N);
   auto SL = IntsTemplateType->getLocation();
@@ -345,6 +474,35 @@ TypeBuilder::BuildTensor(clang::QualType ElementType,
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::Struct,
       clang::TemplateName(TensorTemplateType), args->asArray(),
+      args->asArray(), Ctx.getCanonicalTagType(Spec));
+}
+
+// SHAST-02: BuildSharedTensor mirrors BuildTensor (lines 452-478) but
+// uses SharedTensorTemplateType and 3 template args:
+//   SharedTensor<T, Shape<N>, SharedLinearLayout<...>>
+// The third template argument is a SharedLinearLayout QualType (D-01),
+// not a distributed Layout type.
+clang::QualType
+TypeBuilder::BuildSharedTensor(clang::QualType ElementType,
+                               clang::QualType ShapeType,
+                               clang::QualType LayoutType) {
+  auto SL = SharedTensorTemplateType->getLocation();
+  auto *args = clang::TemplateArgumentList::CreateCopy(
+      Ctx, {mkTypeArg(ElementType), mkTypeArg(ShapeType),
+            mkTypeArg(LayoutType)});
+  void *ins = nullptr;
+  clang::ClassTemplateSpecializationDecl *Spec;
+  if (!(Spec = SharedTensorTemplateType->findSpecialization(
+            args->asArray(), ins))) {
+    Spec = clang::ClassTemplateSpecializationDecl::Create(
+        Ctx, clang::TagTypeKind::Struct, Ctx.getTranslationUnitDecl(),
+        SL, SL, SharedTensorTemplateType, args->asArray(), false,
+        nullptr);
+    SharedTensorTemplateType->AddSpecialization(Spec, ins);
+  }
+  return Ctx.getTemplateSpecializationType(
+      clang::ElaboratedTypeKeyword::Struct,
+      clang::TemplateName(SharedTensorTemplateType), args->asArray(),
       args->asArray(), Ctx.getCanonicalTagType(Spec));
 }
 
