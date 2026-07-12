@@ -369,6 +369,7 @@ struct CUDACompiler {
                     const llvm::StringRef &ModuleName);
 
   clang::QualType BuildTensor(const TensorParameter &);
+  clang::QualType BuildSharedTensor(const SharedTensorParameter &);
   clang::QualType BuildInts(uint32_t N);
   clang::FunctionDecl *
   LookupFunction(const llvm::StringRef &Name,

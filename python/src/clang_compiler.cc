@@ -991,6 +991,26 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
   return Result;
 }
 
+// SHAST-03: BuildSharedTensor mirrors BuildTensor but builds
+// SharedTensor<T, Shape<N>, SharedLinearLayout<...>> via
+// TypeBuilder::BuildSharedLinearLayout → BuildSharedTensor.
+// No PlaceholderLayout logic — shared tensors always need a concrete
+// SharedLinearLayout.
+clang::QualType
+CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
+  clang::QualType Result;
+  TaskQueue.emplace([&](TensorTypeHelpers &helper,
+                        CustomAstConsumer &) {
+    auto Shape = helper.Builder.buildShape(Param.Shape);
+    auto Layout = helper.Builder.BuildSharedLinearLayout(Param.Layout);
+    Result = helper.Builder.BuildSharedTensor(
+        getQualTypeFromScalarType(helper.Builder.Ctx, Param.Type),
+        Shape.type, Layout);
+  });
+  InvocationContext->SwitchTo(*CompileExecutionContext);
+  return Result;
+}
+
 clang::QualType CUDACompiler::BuildInts(uint32_t N) {
   clang::QualType Result;
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
@@ -1178,6 +1198,9 @@ CUDACompiler::inferReturnTypes(
       if (auto *tp =
               std::get_if<TensorParameter>(&req.ParamTypes[J])) {
         argTypes[J] = this->BuildTensor(*tp);
+      } else if (auto *stp = std::get_if<SharedTensorParameter>(
+                     &req.ParamTypes[J])) {
+        argTypes[J] = this->BuildSharedTensor(*stp);
       } else if (auto *st = std::get_if<ScalarType>(
                      &req.ParamTypes[J])) {
         clang::QualType Result;
@@ -1255,6 +1278,9 @@ CUDACompiler::compileBitcode(
       if (auto *tp =
               std::get_if<TensorParameter>(&req.ParamTypes[J])) {
         argTypes[J] = this->BuildTensor(*tp);
+      } else if (auto *stp = std::get_if<SharedTensorParameter>(
+                     &req.ParamTypes[J])) {
+        argTypes[J] = this->BuildSharedTensor(*stp);
       } else if (auto *st = std::get_if<ScalarType>(
                      &req.ParamTypes[J])) {
         clang::QualType Result;
