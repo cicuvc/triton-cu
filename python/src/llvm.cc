@@ -945,6 +945,8 @@ void init_triton_llvm(py::module &&m) {
   // Types for CUDA in-process compilation
   py::enum_<ScalarType>(m, "ScalarType")
       .value("Int32", ScalarType::Int32)
+      .value("UInt32", ScalarType::UInt32)
+      .value("UInt64", ScalarType::UInt64)
       .value("Int64", ScalarType::Int64)
       .value("Fp32", ScalarType::Fp32)
       .value("Fp16", ScalarType::Fp16)
@@ -1024,6 +1026,11 @@ void init_triton_llvm(py::module &&m) {
             stp.Layout.BlockBasis = std::move(v);
           },
           py::return_value_policy::reference_internal)
+      .def_property(
+          "layout_rank",
+          [](SharedTensorParameter &stp) -> uint32_t { return stp.Layout.RANK; },
+          [](SharedTensorParameter &stp, uint32_t v) { stp.Layout.RANK = v; }
+        )
       .def_property(
           "alignment",
           [](SharedTensorParameter &stp) -> uint32_t & {

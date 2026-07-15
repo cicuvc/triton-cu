@@ -124,7 +124,7 @@ struct Dims {
   uint64_t SIZE = 1;
 };
 
-enum class ScalarType { Int32, Int64, Fp32, Fp16, Bf16, Fp8e4m3, Fp8e5m2 };
+enum class ScalarType { Int32, Int64, Fp32, Fp16, Bf16, Fp8e4m3, Fp8e5m2, UInt32, UInt64 };
 
 struct LayoutInfo {
   std::vector<uint32_t> LayoutShape;
@@ -211,6 +211,10 @@ inline ScalarType getScalarTypeFromQualType(clang::ASTContext &Ctx,
     return ScalarType::Int32;
   if (Type.getCanonicalType() == Ctx.LongLongTy)
     return ScalarType::Int64;
+  if (Type.getCanonicalType() == Ctx.UnsignedIntTy)
+    return ScalarType::UInt32;
+  if (Type.getCanonicalType() == Ctx.UnsignedLongLongTy)
+    return ScalarType::UInt64;
   __builtin_unreachable();
 }
 
@@ -233,6 +237,10 @@ inline clang::QualType getQualTypeFromScalarType(clang::ASTContext &Ctx,
     return Ctx.IntTy;
   case ScalarType::Int64:
     return Ctx.LongLongTy;
+  case ScalarType::UInt32:
+    return Ctx.UnsignedIntTy;
+  case ScalarType::UInt64:
+    return Ctx.UnsignedLongLongTy;
   default:
     assert(false && "unsupported scalar type");
   }

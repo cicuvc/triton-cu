@@ -202,6 +202,8 @@ TypeBuilder::BuildIntTuple(clang::SourceLocation SL, unsigned N) {
         SL, SL, IntTupleTemplateType, {TypeArg}, false, nullptr);
     IntTupleTemplateType->AddSpecialization(S, ins);
   }
+  if (!S->hasDefinition())
+    SemaRef.InstantiateClassTemplateSpecialization(SL, S, clang::TSK_ImplicitInstantiation, false, false);
   return S;
 }
 
@@ -257,6 +259,8 @@ TypeBuilder::BuildBasisGroup(const LayoutFactoryContext &LF,
         LF.BasisGroupTmpl, {NBasesArg}, false, nullptr);
     LF.BasisGroupTmpl->AddSpecialization(S, ins);
   }
+  if (!S->hasDefinition())
+    SemaRef.InstantiateClassTemplateSpecialization(SL, S, clang::TSK_ImplicitInstantiation, false, false);
 
   clang::QualType BGType = Ctx.getTagType(
       clang::ElaboratedTypeKeyword::None, std::nullopt, S, false);
@@ -299,6 +303,8 @@ clang::QualType TypeBuilder::BuildLayout(
         LF.LayoutTmpl, specArgs->asArray(), false, nullptr);
     LF.LayoutTmpl->AddSpecialization(Spec, ins);
   }
+  if (!Spec->hasDefinition())
+    SemaRef.InstantiateClassTemplateSpecialization(SL, Spec, clang::TSK_ImplicitInstantiation, false, false);
 
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::None,
@@ -353,6 +359,8 @@ TypeBuilder::BuildSharedLinearLayout(const SharedLayoutInfo &info) {
           tmplArgs->asArray(), false, nullptr);
       Tmpl->AddSpecialization(S, ins);
     }
+    if (!S->hasDefinition())
+      SemaRef.InstantiateClassTemplateSpecialization(SL, S, clang::TSK_ImplicitInstantiation, false, false);
 
     clang::QualType CarrierType = Ctx.getTagType(
         clang::ElaboratedTypeKeyword::None, std::nullopt, S, false);
@@ -424,6 +432,8 @@ TypeBuilder::BuildSharedLinearLayout(const SharedLayoutInfo &info) {
         false, nullptr);
     SharedLinearLayoutTemplateType->AddSpecialization(LayoutSpec, ins);
   }
+  if (!LayoutSpec->hasDefinition())
+    SemaRef.InstantiateClassTemplateSpecialization(SL, LayoutSpec, clang::TSK_ImplicitInstantiation, false, false);
 
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::Struct,
@@ -443,6 +453,10 @@ clang::QualType TypeBuilder::BuildInts(uint32_t N) {
         SL, SL, IntsTemplateType, {TypeArg}, false, nullptr);
     IntsTemplateType->AddSpecialization(S, ins);
   }
+
+  if (!S->hasDefinition())
+        SemaRef.InstantiateClassTemplateSpecialization(SL, S, clang::TSK_ImplicitInstantiation, false, false);
+  
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::None,
       clang::TemplateName(IntsTemplateType), TypeArg, TypeArg,
@@ -500,6 +514,10 @@ TypeBuilder::BuildSharedTensor(clang::QualType ElementType,
         nullptr);
     SharedTensorTemplateType->AddSpecialization(Spec, ins);
   }
+
+  if (!Spec->hasDefinition())
+    SemaRef.InstantiateClassTemplateSpecialization(SL, Spec, clang::TSK_ImplicitInstantiation, false, false);
+  
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::Struct,
       clang::TemplateName(SharedTensorTemplateType), args->asArray(),
