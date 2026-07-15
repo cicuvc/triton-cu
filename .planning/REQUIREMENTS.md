@@ -47,7 +47,7 @@ Lower shared-memory operands to `ptr addrspace(3)` in `ExternCallOpToLLVM.cpp`.
 
 Allow `gl.call()` to accept shared-memory descriptors.
 
-- [ ] **SHAPI-01**: `gl.call()` accepts a `shared_memory_descriptor` argument alongside tensors (`_semantic.py:254` isinstance relaxation) and threads its shared-layout info to the inference hook via `arg_params`
+- [x] **SHAPI-01**: `gl.call()` accepts a `shared_memory_descriptor` argument alongside tensors (`_semantic.py:254` isinstance relaxation) and threads its shared-layout info to the inference hook via `arg_params`
 
 ### Verification
 
@@ -97,7 +97,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHWIRE-01 | Phase 6 | Pending |
 | SHLOWER-01 | Phase 6 | Pending |
 | SHLOWER-02 | Phase 6 | Pending |
-| SHAPI-01 | Phase 6 | Pending |
+| SHAPI-01 | Phase 6 | Complete |
 | SHTEST-01 | Phase 7 | Pending |
 | SHTEST-02 | Phase 7 | Pending |
 | SHTEST-03 | Phase 7 | Pending |
