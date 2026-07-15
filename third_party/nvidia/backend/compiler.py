@@ -269,30 +269,43 @@ class InferExternCallResult:
 
         param_types = []
         for ap in arg_params:
-            tp = llvm.TensorParameter()
-            tp.type = _scalar_type_for(ap["dtype"])
-            tp.shape = ap["shape"]
-            tp.layout_shape = ap["shape"]
-            # Compute minimally valid concrete bases for dtype+shape
-            # inference. The exact layout doesn't matter — we just need a
-            # valid Tensor<T,Shape,Layout<...>> type for template deduction.
-            # N_WARPS=1, all-zero bases produce a degenerate but valid layout.
-            rank = len(ap["shape"])
-            size = 1
-            for d in ap["shape"]:
-                size *= int(d)
-            n_warps = 1
-            # ffs(x) = bit_length of lowest set bit; equivalently (x & -x).bit_length()
-            _ffs_size_per_warp = (size // n_warps)
-            _lsb_bit = (_ffs_size_per_warp & -_ffs_size_per_warp).bit_length() if _ffs_size_per_warp > 0 else 0
-            n_lane_axes = 5
-            n_reg_axes = max(0, _lsb_bit - n_lane_axes - 1)
-            n_warp_axes = max(0, (n_warps & -n_warps).bit_length() - 1)
-            tp.reg_basis = [0] * (n_reg_axes * rank)
-            tp.lane_basis = [0] * (n_lane_axes * rank)
-            tp.warp_basis = [0] * (n_warp_axes * rank)
-            tp.n_warps = n_warps
-            param_types.append(tp)
+            if ap.get("memory_space") == "shared":
+                # D-12: Degenerate all-zero SharedTensorParameter for
+                # template deduction. Only T + Shape matter; real bases
+                # flow at the llir stage from Phase-5 extracted specs.
+                stp = llvm.SharedTensorParameter()
+                stp.type = _scalar_type_for(ap["dtype"])
+                stp.shape = ap["shape"]
+                stp.offset_basis = []       # degenerate: all-zero bases
+                stp.block_basis = []        # degenerate: all-zero bases
+                stp.alignment = 16          # default alignment
+                stp.layout_rank = len(ap["shape"])
+                param_types.append(stp)
+            else:
+                tp = llvm.TensorParameter()
+                tp.type = _scalar_type_for(ap["dtype"])
+                tp.shape = ap["shape"]
+                tp.layout_shape = ap["shape"]
+                # Compute minimally valid concrete bases for dtype+shape
+                # inference. The exact layout doesn't matter — we just need a
+                # valid Tensor<T,Shape,Layout<...>> type for template deduction.
+                # N_WARPS=1, all-zero bases produce a degenerate but valid layout.
+                rank = len(ap["shape"])
+                size = 1
+                for d in ap["shape"]:
+                    size *= int(d)
+                n_warps = 1
+                # ffs(x) = bit_length of lowest set bit; equivalently (x & -x).bit_length()
+                _ffs_size_per_warp = (size // n_warps)
+                _lsb_bit = (_ffs_size_per_warp & -_ffs_size_per_warp).bit_length() if _ffs_size_per_warp > 0 else 0
+                n_lane_axes = 5
+                n_reg_axes = max(0, _lsb_bit - n_lane_axes - 1)
+                n_warp_axes = max(0, (n_warps & -n_warps).bit_length() - 1)
+                tp.reg_basis = [0] * (n_reg_axes * rank)
+                tp.lane_basis = [0] * (n_lane_axes * rank)
+                tp.warp_basis = [0] * (n_warp_axes * rank)
+                tp.n_warps = n_warps
+                param_types.append(tp)
         req.param_types = param_types
 
         # Call inference-only C++ method (D-01)
