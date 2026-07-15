@@ -797,15 +797,25 @@ class CUDABackend(BaseBackend):
 
                     param_types = []
                     for inp in spec_entry["inputs"]:
-                        tp = llvm.TensorParameter()
-                        tp.type = _scalar_type_for(inp["dtype"])
-                        tp.shape = inp["shape"]
-                        tp.layout_shape = inp["shape"]
-                        tp.reg_basis = inp.get("reg_bases", [])
-                        tp.lane_basis = inp.get("lane_bases", [])
-                        tp.warp_basis = inp.get("warp_bases", [])
-                        tp.n_warps = inp.get("num_warps", 1)
-                        param_types.append(tp)
+                        if inp.get("memory_space") == "shared":
+                            stp = llvm.SharedTensorParameter()
+                            stp.type = _scalar_type_for(inp["dtype"])
+                            stp.shape = inp["shape"]
+                            stp.offset_basis = inp.get("offset_bases", [])
+                            stp.block_basis = inp.get("block_bases", [])
+                            stp.alignment = inp.get("alignment", 16)
+                            stp.layout_rank = len(inp["shape"])
+                            param_types.append(stp)
+                        else:
+                            tp = llvm.TensorParameter()
+                            tp.type = _scalar_type_for(inp["dtype"])
+                            tp.shape = inp["shape"]
+                            tp.layout_shape = inp["shape"]
+                            tp.reg_basis = inp.get("reg_bases", [])
+                            tp.lane_basis = inp.get("lane_bases", [])
+                            tp.warp_basis = inp.get("warp_bases", [])
+                            tp.n_warps = inp.get("num_warps", 1)
+                            param_types.append(tp)
                     req.param_types = param_types
                     requests.append(req)
 
@@ -832,15 +842,25 @@ class CUDABackend(BaseBackend):
 
                 param_types = []
                 for inp in spec_entry["inputs"]:
-                    tp = llvm.TensorParameter()
-                    tp.type = _scalar_type_for(inp["dtype"])
-                    tp.shape = inp["shape"]
-                    tp.layout_shape = inp["shape"]
-                    tp.reg_basis = inp.get("reg_bases", [])
-                    tp.lane_basis = inp.get("lane_bases", [])
-                    tp.warp_basis = inp.get("warp_bases", [])
-                    tp.n_warps = inp.get("num_warps", 1)
-                    param_types.append(tp)
+                    if inp.get("memory_space") == "shared":
+                        stp = llvm.SharedTensorParameter()
+                        stp.type = _scalar_type_for(inp["dtype"])
+                        stp.shape = inp["shape"]
+                        stp.offset_basis = inp.get("offset_bases", [])
+                        stp.block_basis = inp.get("block_bases", [])
+                        stp.alignment = inp.get("alignment", 16)
+                        stp.layout_rank = len(inp["shape"])
+                        param_types.append(stp)
+                    else:
+                        tp = llvm.TensorParameter()
+                        tp.type = _scalar_type_for(inp["dtype"])
+                        tp.shape = inp["shape"]
+                        tp.layout_shape = inp["shape"]
+                        tp.reg_basis = inp.get("reg_bases", [])
+                        tp.lane_basis = inp.get("lane_bases", [])
+                        tp.warp_basis = inp.get("warp_bases", [])
+                        tp.n_warps = inp.get("num_warps", 1)
+                        param_types.append(tp)
                 req.param_types = param_types
                 requests.append(req)
 
