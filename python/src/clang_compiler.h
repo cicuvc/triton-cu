@@ -412,6 +412,9 @@ struct CUDACompiler {
   // MangledName/ExtractorMangledNames are empty (no codegen).
   std::tuple<std::string, std::string, std::vector<CudaFuncResult>>
   inferReturnTypes(const std::vector<CudaFuncRequest> &requests);
+
+
+  ~CUDACompiler();
 };
 
 // ============================================================

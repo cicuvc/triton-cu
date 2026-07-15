@@ -809,9 +809,11 @@ void CUDACompiler::PerformCompileImpl(uint64_t Arg0,
     CompilerRef = &Args->Compiler;
   } while (0);
 
+  // We've done the whole compilation job and if other switches into here, bounce immediately
+  while(true){
   CompilerRef->CompileExecutionContext->SwitchTo(
       *CompilerRef->InvocationContext);
-
+  }
   __builtin_unreachable();
 }
 
@@ -1378,6 +1380,19 @@ CUDACompiler::compileBitcode(
   }
 
   return {bitcode, "", results};
+}
+
+CUDACompiler::~CUDACompiler(){
+  // CUDACompiler may get destroyed before whole HandleTranslationUnit process completes
+  TaskQueue.emplace([&](TensorTypeHelpers &helper,
+                        CustomAstConsumer &AstC) {
+    AstC.CodeGen->HandleTranslationUnit(
+        AstC.ci.getASTContext());
+    AstC.Running = false;
+  });
+  InvocationContext->SwitchTo(*CompileExecutionContext);
+
+  // Now we can safely deconstruct CompilerInstance
 }
 
 // ============================================================
