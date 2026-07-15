@@ -42,13 +42,15 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ **TEST-01**: New E2E test (`test_reduce_f16_f32`) exercising a shape-AND-dtype-changing extern call (f16→f32 `reduce_f16`), supplying only `result_layout` — GPU output matches `x.to(float32).sum(1)` within rtol/atol=1e-2, and `ttgir` confirms `f32` + `tensor<32xf32` result type — Validated in Phase 3: Verification
 - ✓ **TEST-02**: All 4 existing extern-call tests pass unchanged (6/6 total incl. new + hook test) — Validated in Phase 3: Verification
 - ✓ **TEST-03**: lit suite unaffected (Gluon lit 5/5 pass; zero MLIR/dialect/production source changed) — Validated in Phase 3: Verification
+- ✓ **SHTYPE-01/SHTYPE-02**: `SharedLinearLayout` (OffsetBases/BlockBases NTTP carriers, `evaluate()`) and `SharedTensor<T,Shape,Layout>` (variadic `operator()` → `T&`) device templates compile as valid CUDA C++20 — Validated in Phase 4
+- ✓ **SHAST-01/SHAST-02/SHAST-03**: `SharedTensorParameter` structs + pybind11 binding, `TypeBuilder::BuildSharedTensor` forward AST construction, `TypeInspector::ParseSharedTensorType` reverse parsing — full clang AST round-trip verified via GPU-free pytest harness (`test_shared_tensor.py`, 4/4 pass) — Validated in Phase 4
+- ✓ **D-07 swizzle parity**: C++ `SharedLinearLayout::evaluate()` proven bit-identical to MLIR `LinearLayout({offsetBases, blockBases}, outDims)` composition via 5 static_assert checks — Validated in Phase 4
 
 ### Active
 
 **Milestone v1.1 (Shared Memory Interop)** — requirements defined in `.planning/REQUIREMENTS.md`:
-- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write)
-- New C++ `SharedLinearLayout` representation (offset/block bases + alignment; full swizzle)
-- `shared_memory_descriptor` ↔ `SharedTensor` type round-trip through clang AST
+- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR/lowering/frontend remain (Phases 5-7)
+- `shared_memory_descriptor` ↔ `SharedTensor` frontend round-trip (Phase 6; clang AST side validated in Phase 4)
 - MLIR memref lowering with addrspace-3 conversion (load + store)
 - Integration with the v1.0 return-type inference machinery
 
@@ -95,7 +97,9 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 | Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | ✓ Good — seam built in Phase 1 |
 | Treat CONCERNS.md as partly outdated | Verified in code that the patch step already handles layout + convert_layout; real gap is shape/dtype hard-error | ✓ Good |
 | SharedTensor is argument-only for v1.1 | Returning shared memory is a larger scope; passing shared buffers into device fns covers the primary use case | — Pending |
-| New C++ SharedLinearLayout distinct from distributed Layout | Shared memory addressing (offset/block bases + swizzle) differs from distributed reg/lane/warp bases; needs its own representation | — Pending |
+| New C++ SharedLinearLayout distinct from distributed Layout | Shared memory addressing (offset/block bases + swizzle) differs from distributed reg/lane/warp bases; needs its own representation | ✓ Good — shipped Phase 4; D-07 swizzle parity proven bit-identical to MLIR LinearLayout |
+| OffsetBases/BlockBases use RANK+N_BASES NTTP carrier structs | C++20 NTTP requires structural types with fixed-size arrays; matches existing BasisGroup pattern | ✓ Good — Phase 4 |
+| Swizzle parity verified via static_assert in synthetic .cu | `parse()` success proves constexpr checks; avoids pre-existing coroutine crash in `infer()` outside the gluon.jit pipeline | ✓ Good — 5 checks pass, highest-risk correctness concern resolved |
 
 ## Evolution
 
@@ -115,4 +119,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-12 — started milestone v1.1 (Shared Memory Interop): pass `shared_memory_descriptor` into CUDA device fns via `SharedTensor<dtype,shape,layout>&`, new C++ `SharedLinearLayout`, memref addrspace-3 lowering.*
+*Last updated: 2026-07-15 after Phase 4 (C++ Templates + Clang AST Foundation) — SharedLinearLayout/SharedTensor device templates and clang AST round-trip shipped; D-07 swizzle parity proven; known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*

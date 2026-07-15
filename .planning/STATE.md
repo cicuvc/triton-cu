@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Shared Memory Interop
-current_phase: 04
-current_phase_name: c-templates-clang-ast-foundation
-status: verifying
-stopped_at: Phase 4 context gathered
-last_updated: "2026-07-12T15:01:16.264Z"
-last_activity: 2026-07-12
-last_activity_desc: Phase 04 execution started
+current_phase: 5
+current_phase_name: MLIR Op Relaxation + Spec Extraction
+status: ready_to_plan
+stopped_at: Phase 4 complete, ready to plan Phase 5
+last_updated: "2026-07-15T12:45:52.556Z"
+last_activity: 2026-07-15
+last_activity_desc: Phase 04 complete, transitioned to Phase 5
 progress:
   total_phases: 4
   completed_phases: 1
@@ -21,25 +21,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-12)
+See: .planning/PROJECT.md (updated 2026-07-15)
 
 **Core value:** `gl.call()` produces MLIR result types (dtype, shape, layout) matching what the CUDA C++ function actually returns, with type-consistent downstream IR — extended so Gluon `shared_memory_descriptor` buffers can be passed into device functions as `SharedTensor<T,Shape,SharedLinearLayout>&` with correct addrspace-3 lowering.
-**Current focus:** Phase 04 — c-templates-clang-ast-foundation
+**Current focus:** Phase 05 — MLIR Op Relaxation + Spec Extraction
 
 ## Current Position
 
-Phase: 04 (c-templates-clang-ast-foundation) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
-Last activity: 2026-07-12 — Phase 04 execution started
+Phase: 5 — MLIR Op Relaxation + Spec Extraction
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-15 — Phase 04 complete, transitioned to Phase 5
 
-Progress: [████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░] 0% (v1.1 phases)
+Progress: [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 25% (v1.1 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 8 (across v1.0)
+- Total plans completed: 11 (across v1.0)
 - Average duration: —
 - Total execution time: —
 
@@ -53,6 +53,7 @@ Progress: [████████████████████░░░
 | Phase 04-c-templates-clang-ast-foundation P01 | 8min | 3 tasks | 4 files |
 | Phase 04-c-templates-clang-ast-foundation P02 | 7min | 3 tasks | 2 files |
 | Phase 04-c-templates-clang-ast-foundation P03 | 15min | 3 tasks | 1 files |
+| 04 | 3 | - | - |
 
 ## Accumulated Context
 
@@ -64,8 +65,10 @@ Decisions are logged in PROJECT.md Key Decisions table. Recent:
 - Infer shape/dtype/layout at semantic (IR-build) time for type-consistent downstream IR.
 - Reach CUDA inference from the Gluon frontend via the backend `codegen_fns` hook.
 - SharedTensor is argument-only for v1.1 (returning shared memory deferred to SHRET-01).
-- New C++ `SharedLinearLayout` distinct from distributed `Layout` (different addressing model).
+- New C++ `SharedLinearLayout` distinct from distributed `Layout` (different addressing model) — validated Phase 4, D-07 swizzle parity proven.
 - `SharedTensor<T,Shape,SharedLinearLayout>` is a separate C++ template, not `Tensor` with a different layout parameter.
+- OffsetBases/BlockBases use RANK+N_BASES NTTP carrier structs (C++20 structural type requirement).
+- Swizzle parity verified via static_assert in synthetic .cu (parse-only verification avoids pre-existing coroutine crash).
 
 ### Pending Todos
 
@@ -75,7 +78,7 @@ None yet.
 
 - **Phase 5 (ODS relaxation):** `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` has the widest blast radius — any downstream pass that assumes tensor-only inputs must be verified.
 - **Phase 6 (lowering):** Address-space mismatch (alloca/store produces addrspace 0; callee expects addrspace 3) causes silent data corruption — LLVM IR dump inspection is mandatory for verification.
-- **Swizzle parity (Phase 4 + 7):** The C++ `SharedLinearLayout::evaluate()` byte-offset formula must be bit-identical to the MLIR `LinearLayout({offsetBases, blockBases}, outDims)` composition at `gluon_ir.cc:102-103` — mismatch means wrong shared-memory addresses.
+- **[Phase 4] Pre-existing CUDACompiler coroutine destructor segfault:** `infer()`/`compileBitcode()` crash when the compiler is destroyed before its LLVMContext outside the gluon.jit pipeline; tests work around via module-level compiler/context caching (mirrors `InferExternCallResult._compilers`). Root cause in X64SysVABI coroutine stack ownership — watch in Phases 6-7.
 
 ## Deferred Items
 
@@ -88,6 +91,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-12T15:01:16.260Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-c-templates-clang-ast-foundation/04-CONTEXT.md
+Last session: 2026-07-15T12:46:00Z
+Stopped at: Phase 4 complete, ready to plan Phase 5
+Resume file: None

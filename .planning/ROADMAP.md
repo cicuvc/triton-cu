@@ -169,7 +169,7 @@ Plans:
 | 1. Seam & Cleanup | v1.0 | 2/2 | Complete | 2026-07-11 |
 | 2. Semantic-Time Inference | v1.0 | 5/5 | Complete | 2026-07-11 |
 | 3. Verification | v1.0 | 1/1 | Complete | 2026-07-11 |
-| 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete   | 2026-07-12 |
+| 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete    | 2026-07-12 |
 | 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 0/TBD | Not started | - |
 | 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 0/TBD | Not started | - |
 | 7. E2E Verification | v1.1 | 0/TBD | Not started | - |

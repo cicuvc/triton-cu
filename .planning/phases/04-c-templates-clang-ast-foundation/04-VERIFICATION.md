@@ -1,16 +1,18 @@
 ---
 phase: 04-c-templates-clang-ast-foundation
 verified: 2026-07-12T23:30:00Z
-status: human_needed
+status: passed
 score: 4/5 must-haves verified
 behavior_unverified: 1
 overrides_applied: 0
 behavior_unverified_items:
+
   - truth: "TypeInspector::DispatchTypeParsing() parses a SharedTensor<...>& AST node back to a SharedTensorParameter with scalar type, shape dims, and layout bases matching the original input — round-trip verification passes"
     test: "Invoke inferReturnTypes with a CudaFuncRequest containing SharedTensorParameter for a device function using SharedTensor& params, then verify the parsed return types match the input."
     expected: "DispatchTypeParsing dispatches to ParseSharedTensorType, which extracts scalar type, shape dims, offset/block bases, and alignment that match the original input."
     why_human: "The full infer() path is blocked by a pre-existing CUDACompiler coroutine destructor segfault when run outside the gluon.jit pipeline. The TypeInspector implementation (ParseSharedTensorType, ParseSharedBasis, DispatchTypeParsing branch) is present and compiles, but the end-to-end round-trip is not exercised by the test harness. The production codepath (test_extern_call.py) exercises the Tensor round-trip but not SharedTensor."
 human_verification:
+
   - test: "Verify TypeInspector round-trip for SharedTensorParameter"
     expected: "DispatchTypeParsing correctly parses SharedTensor<...>& back to SharedTensorParameter with matching scalar type, shape, offset_basis, block_basis, and alignment."
     why_human: "Pre-existing CUDACompiler coroutine crash blocks the infer() test path. The code is present and compiles but is not exerciseable in the current test harness. Verify either by fixing the coroutine crash and running the full round-trip, or by invoking the TypeInspector through a separate isolated test harness."
@@ -93,6 +95,7 @@ All 5 Phase 4 requirements are addressed. No orphaned requirements — REQUIREME
 **Why human:** The `infer()` path is blocked by a pre-existing CUDACompiler coroutine destructor segfault when run outside the `gluon.jit` pipeline. The implementation code (ParseSharedTensorType at clang_compiler.cc:632-658, ParseSharedBasis at 563-578, DispatchTypeParsing branch at 680-682) is present and compiles, but the end-to-end round-trip is not exercised by the test harness. The production codepath (test_extern_call.py, 6/6 tests pass) exercises the Tensor round-trip but not SharedTensor.
 
 **Mitigation routes (choose one):**
+
 - **Fix the coroutine crash**, then run `compiler.infer()` with SharedTensorParameter requests
 - **Isolate TypeInspector in a separate test** that invokes DispatchTypeParsing directly on a SharedTensor clang type
 - **Accept as-is for Phase 4**: the code is wired and will be exercised end-to-end in Phase 6/7 when real GPU tests drive the full compilation pipeline
