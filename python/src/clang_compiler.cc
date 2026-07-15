@@ -1016,6 +1016,11 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
 // TypeBuilder::BuildSharedLinearLayout → BuildSharedTensor.
 // No PlaceholderLayout logic — shared tensors always need a concrete
 // SharedLinearLayout.
+//
+// RED test (TDD): Currently returns raw template specialization type with
+// NO addrspace qualifier and NO lvalue reference. D-15 will add:
+//   Ctx.getLValueReferenceType(Ctx.getAddrSpaceQualType(sharedTensorType, LangAS::cuda_shared))
+// After D-15, grep for LangAS::cuda_shared must return >=1.
 clang::QualType
 CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
   clang::QualType Result;
