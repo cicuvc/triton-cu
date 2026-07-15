@@ -800,7 +800,7 @@ def TTG_ExternCallOp : TTG_Op<"extern_call", [
   }];
 
   let arguments = (ins
-    Variadic<TT_Tensor>:$inputs,
+    Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>:$inputs,
     StrAttr:$symbol,
     StrAttr:$libpath,
     UnitAttr:$assert_no_conv,
