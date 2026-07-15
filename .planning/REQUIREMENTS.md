@@ -34,7 +34,7 @@ Relax the `ttg.extern_call` op and its spec extractor to accept shared-memory (`
 
 Connect the MLIR-side specs to the CUDA compiler through the existing single-parse path.
 
-- [ ] **SHWIRE-01**: `_pre_compile_extern_calls()` builds `SharedTensorParameter` for shared inputs (with a `llvm.SharedTensorParameter` pybind11 binding) and routes them through the existing suspended-compiler path, preserving the single-parse guard (`compiler.py:683` assertion holds — no double parse)
+- [x] **SHWIRE-01**: `_pre_compile_extern_calls()` builds `SharedTensorParameter` for shared inputs (with a `llvm.SharedTensorParameter` pybind11 binding) and routes them through the existing suspended-compiler path, preserving the single-parse guard (`compiler.py:683` assertion holds — no double parse)
 
 ### LLVM Lowering
 
@@ -94,7 +94,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHAST-03 | Phase 4 | Complete |
 | SHMLIR-01 | Phase 5 | Complete |
 | SHMLIR-02 | Phase 5 | Complete |
-| SHWIRE-01 | Phase 6 | Pending |
+| SHWIRE-01 | Phase 6 | Complete |
 | SHLOWER-01 | Phase 6 | Pending |
 | SHLOWER-02 | Phase 6 | Pending |
 | SHAPI-01 | Phase 6 | Complete |

@@ -150,13 +150,13 @@ Plans:
   3. Emitted LLVM IR shows `ptr addrspace(3)` for shared-memory argument positions in the `call` instruction, and `ptr addrspace(0)` for tensor positions — verified via LLVM IR dump inspection of a mixed-arg call site
   4. When a shared memory descriptor with accumulated subview offsets (from `.slice()` / `.index()`) is passed, the callee receives `base + shmemOffset` (GEP-computed subview address), not the raw allocation base — verified via LLVM IR showing the correct GEP offset
 
-**Plans**: 1/3 plans executed
+**Plans**: 2/3 plans executed
 
 Plans:
 **Wave 1** (parallel — independent files)
 
 - [x] 06-01-PLAN.md — Frontend API: gl.call() accepts shared_memory_descriptor args, PaddedSharedLayout rejection guard, arg_params memory_space key (SHAPI-01)
-- [ ] 06-02-PLAN.md — CUDA Wiring: infer_result + _pre_compile_extern_calls SharedTensorParameter branches, arg_spaces module attr, BuildSharedTensor addrspace qualifier (SHWIRE-01)
+- [x] 06-02-PLAN.md — CUDA Wiring: infer_result + _pre_compile_extern_calls SharedTensorParameter branches, arg_spaces module attr, BuildSharedTensor addrspace qualifier (SHWIRE-01)
 - [ ] 06-03-PLAN.md — LLVM Lowering: getArgMemorySpaces helper, per-operand shared-vs-distributed branch, mixed-arg lit test (SHLOWER-01, SHLOWER-02)
 
 **UI hint**: no
@@ -186,5 +186,5 @@ Plans:
 | 3. Verification | v1.0 | 1/1 | Complete | 2026-07-11 |
 | 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete    | 2026-07-12 |
 | 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 2/2 | Complete    | 2026-07-15 |
-| 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 1/3 | In Progress|  |
+| 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 2/3 | In Progress|  |
 | 7. E2E Verification | v1.1 | 0/TBD | Not started | - |
