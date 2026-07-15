@@ -800,7 +800,12 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
     if not src_path.exists():
         raise FileNotFoundError(f"extern call source not found: {src_path}")
 
-    tensors = [_semantic.to_tensor(a) for a in args]
+    tensors = []
+    for a in args:
+        if isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor)):
+            tensors.append(a)
+        else:
+            tensors.append(_semantic.to_tensor(a))
     if isinstance(result_layout, (list, tuple)):
         result_layouts = [_unwrap_if_constexpr(lo) for lo in result_layout]
     else:
