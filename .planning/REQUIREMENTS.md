@@ -40,8 +40,8 @@ Connect the MLIR-side specs to the CUDA compiler through the existing single-par
 
 Lower shared-memory operands to `ptr addrspace(3)` in `ExternCallOpToLLVM.cpp`.
 
-- [ ] **SHLOWER-01**: Shared-memory operands lower to a `ptr addrspace(3)` passed directly to the callee (via `getSharedMemoryObjectFromStruct` base), bypassing the distributed `alloca+store+ptr` path; distributed operands keep their existing path in mixed argument lists, matching the callee signature order
-- [ ] **SHLOWER-02**: Accumulated subview offsets (`memdesc_subslice`/`memdesc_index`/`memdesc_reshape`) are applied via `getShmemOffset()` so the callee receives the correct sub-buffer address, not the allocation base
+- [x] **SHLOWER-01**: Shared-memory operands lower to a `ptr addrspace(3)` passed directly to the callee (via `getSharedMemoryObjectFromStruct` base), bypassing the distributed `alloca+store+ptr` path; distributed operands keep their existing path in mixed argument lists, matching the callee signature order
+- [x] **SHLOWER-02**: Accumulated subview offsets (`memdesc_subslice`/`memdesc_index`/`memdesc_reshape`) are applied via `getShmemOffset()` so the callee receives the correct sub-buffer address, not the allocation base
 
 ### Frontend API
 
@@ -95,8 +95,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHMLIR-01 | Phase 5 | Complete |
 | SHMLIR-02 | Phase 5 | Complete |
 | SHWIRE-01 | Phase 6 | Complete |
-| SHLOWER-01 | Phase 6 | Pending |
-| SHLOWER-02 | Phase 6 | Pending |
+| SHLOWER-01 | Phase 6 | Complete |
+| SHLOWER-02 | Phase 6 | Complete |
 | SHAPI-01 | Phase 6 | Complete |
 | SHTEST-01 | Phase 7 | Pending |
 | SHTEST-02 | Phase 7 | Pending |
