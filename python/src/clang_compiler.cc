@@ -1418,7 +1418,7 @@ CUDACompiler::~CUDACompiler(){
 // ============================================================
 namespace {
 
-struct SpecInput {
+struct TensorSpecInput {
   std::string dtype;
   llvm::SmallVector<int64_t, 4> shape;
   int64_t numWarps;
@@ -1427,11 +1427,20 @@ struct SpecInput {
   llvm::SmallVector<int32_t, 16> warpBases;
 };
 
+struct SharedSpecInput {
+  std::string dtype;
+  llvm::SmallVector<int64_t, 4> shape;
+  std::string memorySpace;
+  llvm::SmallVector<int32_t, 16> offsetBases;
+  llvm::SmallVector<int32_t, 16> blockBases;
+  int32_t alignment;
+};
+
 struct ExternCallSpec {
   std::string symbol;
   std::string libpath;
   bool useFastMath = false;
-  llvm::SmallVector<SpecInput, 4> inputs;
+  llvm::SmallVector<std::variant<TensorSpecInput, SharedSpecInput>, 4> inputs;
 };
 
 llvm::SmallVector<ExternCallSpec, 4>
