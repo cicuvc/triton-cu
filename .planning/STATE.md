@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Shared Memory Interop
-current_phase: 5
-current_phase_name: MLIR Op Relaxation + Spec Extraction
+current_phase: 05
+current_phase_name: mlir-op-relaxation-spec-extraction
 status: executing
 stopped_at: Phase 5 context gathered
-last_updated: "2026-07-15T13:23:54.608Z"
+last_updated: "2026-07-15T15:06:58.629Z"
 last_activity: 2026-07-15
-last_activity_desc: Phase 04 complete, transitioned to Phase 5
+last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 5
+  completed_plans: 4
   percent: 25
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-15)
 
 **Core value:** `gl.call()` produces MLIR result types (dtype, shape, layout) matching what the CUDA C++ function actually returns, with type-consistent downstream IR — extended so Gluon `shared_memory_descriptor` buffers can be passed into device functions as `SharedTensor<T,Shape,SharedLinearLayout>&` with correct addrspace-3 lowering.
-**Current focus:** Phase 05 — MLIR Op Relaxation + Spec Extraction
+**Current focus:** Phase 05 — mlir-op-relaxation-spec-extraction
 
 ## Current Position
 
-Phase: 5 — MLIR Op Relaxation + Spec Extraction
-Plan: Not started
+Phase: 05 (mlir-op-relaxation-spec-extraction) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-07-15 — Phase 04 complete, transitioned to Phase 5
+Last activity: 2026-07-15 — Phase 05 execution started
 
 Progress: [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 25% (v1.1 phases)
 
@@ -54,6 +54,7 @@ Progress: [████████████░░░░░░░░░░░
 | Phase 04-c-templates-clang-ast-foundation P02 | 7min | 3 tasks | 2 files |
 | Phase 04-c-templates-clang-ast-foundation P03 | 15min | 3 tasks | 1 files |
 | 04 | 3 | - | - |
+| Phase 05-mlir-op-relaxation-spec-extraction P01 | 9min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-15T12:59:10.947Z
+Last session: 2026-07-15T15:06:54.187Z
 Stopped at: Phase 5 context gathered
 Resume file: .planning/phases/05-mlir-op-relaxation-spec-extraction/05-CONTEXT.md

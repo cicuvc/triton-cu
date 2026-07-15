@@ -27,7 +27,7 @@ Extend the v1.0 clang type-inference infrastructure (`clang_compiler.cc`/`.h`) w
 
 Relax the `ttg.extern_call` op and its spec extractor to accept shared-memory (`MemDescType`) operands.
 
-- [ ] **SHMLIR-01**: `ttg.extern_call` accepts `MemDescType` operands (ODS relaxation at `TritonGPUOps.td:803`) without breaking the tensor-only path; a lit test verifies both tensor-only and mixed tensor+memdesc inputs pass verification
+- [x] **SHMLIR-01**: `ttg.extern_call` accepts `MemDescType` operands (ODS relaxation at `TritonGPUOps.td:803`) without breaking the tensor-only path; a lit test verifies both tensor-only and mixed tensor+memdesc inputs pass verification
 - [ ] **SHMLIR-02**: `extractExternCallSpecs()` handles `MemDescType` operands (no `cast<RankedTensorType>` crash) and emits shared-layout specs (`memory_space=shared`, `offset_bases`, `block_bases`, `alignment`) via `toLinearLayout(memDescType)` — covering `SharedLinearEncodingAttr`, `SwizzledSharedEncoding`, and `NVMMASharedEncoding` (all convert to a shared linear layout)
 
 ### CUDA Compilation Wiring
@@ -92,7 +92,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHAST-01 | Phase 4 | Complete |
 | SHAST-02 | Phase 4 | Complete |
 | SHAST-03 | Phase 4 | Complete |
-| SHMLIR-01 | Phase 5 | Pending |
+| SHMLIR-01 | Phase 5 | Complete |
 | SHMLIR-02 | Phase 5 | Pending |
 | SHWIRE-01 | Phase 6 | Pending |
 | SHLOWER-01 | Phase 6 | Pending |
