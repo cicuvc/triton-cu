@@ -251,8 +251,8 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         _check(isinstance(src_path, str), lambda: f"expected 'src_path' to be a str but got {type(src_path)!r}")
         _check(isinstance(func, str), lambda: f"expected 'func' to be a str but got {type(func)!r}")
         for a in args:
-            _check(isinstance(a, ttgl.tensor),
-                   lambda: f"all arguments must be tensors but got {type(a)!r}")
+            _check(isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor)),
+                   lambda: f"all arguments must be tensors or shared_memory_descriptors but got {type(a)!r}")
         _check(isinstance(result_layouts, list),
                lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
 
@@ -262,6 +262,16 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             if hasattr(a, 'dtype') and str(a.dtype) in ("fp64", "f64", "float64"):
                 raise NotImplementedError(_f64_err)
 
+        # D-19/D-20: PaddedSharedLayout guard — raise before building IR.
+        import triton.experimental.gluon.language._layouts as _glayouts
+        _psl_err = ("gl.call() does not support PaddedSharedLayout shared memory; "
+                     "use SharedLinearLayout/SwizzledSharedLayout/NVMMASharedLayout "
+                     "(see v1.1 out-of-scope)")
+        for a in args:
+            if isinstance(a, ttgl.shared_memory_descriptor):
+                if isinstance(a.type.layout, _glayouts.PaddedSharedLayout):
+                    raise NotImplementedError(_psl_err)
+
         # Phase 2: Use CUDA-inferred dtype+shape for result type construction.
         # The inference hook was registered by the CUDA backend via codegen_fns.
         infer_hook = self.builder.codegen_fns.get("infer_extern_call_result")
@@ -269,11 +279,19 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         if infer_hook is not None:
             arg_params = []
             for a in args:
-                arg_params.append({
-                    "dtype": str(a.dtype),
-                    "shape": list(a.shape),
-                    "layout": a.type.layout,
-                })
+                if isinstance(a, ttgl.shared_memory_descriptor):
+                    arg_params.append({
+                        "dtype": str(a.dtype),
+                        "shape": list(a.shape),
+                        "layout": a.type.layout,
+                        "memory_space": "shared",
+                    })
+                else:
+                    arg_params.append({
+                        "dtype": str(a.dtype),
+                        "shape": list(a.shape),
+                        "layout": a.type.layout,
+                    })
             inferred_results = infer_hook.infer_result(
                 str(src_path), func, arg_params, use_fast_math)
         else:
