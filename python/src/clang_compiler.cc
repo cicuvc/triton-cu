@@ -4,6 +4,7 @@
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
+#include <clang/Basic/AddressSpaces.h>
 #include <clang/Basic/LangStandard.h>
 #include <clang/Frontend/FrontendOptions.h>
 #include <clang/Lex/HeaderSearchOptions.h>
@@ -1017,10 +1018,9 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
 // No PlaceholderLayout logic — shared tensors always need a concrete
 // SharedLinearLayout.
 //
-// RED test (TDD): Currently returns raw template specialization type with
-// NO addrspace qualifier and NO lvalue reference. D-15 will add:
-//   Ctx.getLValueReferenceType(Ctx.getAddrSpaceQualType(sharedTensorType, LangAS::cuda_shared))
-// After D-15, grep for LangAS::cuda_shared must return >=1.
+// D-15: Applies LangAS::cuda_shared addrspace qualifier to the
+// SharedTensor& pointee so the mangled callee signature natively
+// takes ptr addrspace(3) — no addrspacecast at call sites.
 clang::QualType
 CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
   clang::QualType Result;
@@ -1028,9 +1028,13 @@ CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
                         CustomAstConsumer &) {
     auto Shape = helper.Builder.buildShape(Param.Shape);
     auto Layout = helper.Builder.BuildSharedLinearLayout(Param.Layout);
-    Result = helper.Builder.BuildSharedTensor(
+    auto sharedTensorType = helper.Builder.BuildSharedTensor(
         getQualTypeFromScalarType(helper.Builder.Ctx, Param.Type),
         Shape.type, Layout);
+    auto &Ctx = helper.Builder.Ctx;
+    auto as3Type = Ctx.getAddrSpaceQualType(
+        sharedTensorType, clang::LangAS::cuda_shared);
+    Result = Ctx.getLValueReferenceType(as3Type);
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;
