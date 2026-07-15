@@ -77,7 +77,7 @@ Plans:
 **Milestone Goal:** Gluon `shared_memory_descriptor` buffers can be passed into CUDA C++ `__device__` template functions via `gl.call()` as `SharedTensor<T,Shape,SharedLinearLayout>&` with correct addrspace-3 lowering, read+write access, full swizzle support, and integration with the v1.0 return-type inference machinery.
 
 - [x] **Phase 4: C++ Templates + Clang AST Foundation** — Device-side SharedLinearLayout/SharedTensor templates and clang AST round-trip infrastructure (completed 2026-07-12)
-- [ ] **Phase 5: MLIR Op Relaxation + Spec Extraction** — Relax ttg.extern_call ODS for MemDescType; extract shared-layout JSON specs
+- [x] **Phase 5: MLIR Op Relaxation + Spec Extraction** — Relax ttg.extern_call ODS for MemDescType; extract shared-layout JSON specs (completed 2026-07-15)
 - [ ] **Phase 6: CUDA Wiring + LLVM Lowering + Frontend API** — Wire shared args through compilation; per-operand ptr addrspace(3) lowering; frontend accepts shared_memory_descriptor
 - [ ] **Phase 7: E2E Verification** — Shared read+write GPU test, swizzle-correctness test, full regression
 
@@ -127,13 +127,13 @@ Plans:
   3. The emitted JSON spec for a memdesc operand contains `"memory_space": "shared"`, `"offset_bases"`, `"block_bases"`, and `"alignment"` keys with values matching the MLIR `SharedLinearEncodingAttr`
   4. Tensor-only `extern_call` specs continue to work unchanged — the existing distributed-layout extraction path is unaffected by the new branch
 
-**Plans**: 1/2 plans executed
+**Plans**: 2/2 plans complete
 
 Plans:
 **Wave 1** (parallel — independent files)
 
 - [x] 05-01-PLAN.md — ODS relaxation: `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` at TritonGPUOps.td:803 + lit tests (mixed parse + tensor regression)
-- [ ] 05-02-PLAN.md — SpecInput→variant + MemDescType extraction branch + std::visit JSON serialization
+- [x] 05-02-PLAN.md — SpecInput→variant + MemDescType extraction branch + std::visit JSON serialization
 
 **UI hint**: no
 
@@ -177,6 +177,6 @@ Plans:
 | 2. Semantic-Time Inference | v1.0 | 5/5 | Complete | 2026-07-11 |
 | 3. Verification | v1.0 | 1/1 | Complete | 2026-07-11 |
 | 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete    | 2026-07-12 |
-| 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 1/2 | In Progress|  |
+| 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 2/2 | Complete   | 2026-07-15 |
 | 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 0/TBD | Not started | - |
 | 7. E2E Verification | v1.1 | 0/TBD | Not started | - |

@@ -4,17 +4,17 @@ milestone: v1.1
 milestone_name: Shared Memory Interop
 current_phase: 05
 current_phase_name: mlir-op-relaxation-spec-extraction
-status: executing
+status: verifying
 stopped_at: Phase 5 context gathered
-last_updated: "2026-07-15T15:06:58.629Z"
+last_updated: "2026-07-15T15:15:45.938Z"
 last_activity: 2026-07-15
 last_activity_desc: Phase 05 execution started
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
-  completed_plans: 4
-  percent: 25
+  completed_plans: 5
+  percent: 50
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-15)
 
 Phase: 05 (mlir-op-relaxation-spec-extraction) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-15 — Phase 05 execution started
 
 Progress: [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 25% (v1.1 phases)
@@ -55,6 +55,7 @@ Progress: [████████████░░░░░░░░░░░
 | Phase 04-c-templates-clang-ast-foundation P03 | 15min | 3 tasks | 1 files |
 | 04 | 3 | - | - |
 | Phase 05-mlir-op-relaxation-spec-extraction P01 | 9min | 3 tasks | 3 files |
+| Phase 05-mlir-op-relaxation-spec-extraction P02 | 6 | 4 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,7 @@ Decisions are logged in PROJECT.md Key Decisions table. Recent:
 - `SharedTensor<T,Shape,SharedLinearLayout>` is a separate C++ template, not `Tensor` with a different layout parameter.
 - OffsetBases/BlockBases use RANK+N_BASES NTTP carrier structs (C++20 structural type requirement).
 - Swizzle parity verified via static_assert in synthetic .cu (parse-only verification avoids pre-existing coroutine crash).
+- [Phase ?]: Used std::variant<TensorSpecInput, SharedSpecInput> instead of optional fields on a single struct — per D-10, cleaner type-level separation
 
 ### Pending Todos
 
@@ -92,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-15T15:06:54.187Z
+Last session: 2026-07-15T15:15:39.043Z
 Stopped at: Phase 5 context gathered
 Resume file: .planning/phases/05-mlir-op-relaxation-spec-extraction/05-CONTEXT.md
