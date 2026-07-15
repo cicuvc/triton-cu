@@ -622,22 +622,22 @@ module attributes {
 | A4 | `TypeBuilder::BuildSharedTensor` with LangAS::cuda_shared produces correct IR — verified existentially from Phase 4 implementation but not re-verified in this session | Architecture Patterns | Low — Phase 4 AST round-trip tests passed |
 | A5 | Helper for extracting `offset_bases`/`block_bases`/`alignment` from Python `SharedLayout` objects can use `layout._to_ir()` / `layoutToGluon` reverse path or direct attribute access | Code Examples | Low — layout objects are frozen dataclasses with public attributes |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **SharedLayout → bases extraction helper design**
    - What we know: `SharedLinearLayout`, `SwizzledSharedLayout`, `NVMMASharedLayout` all have `toLinearLayout` conversion (Phase 5 verified). Python layout objects are frozen dataclasses.
    - What's unclear: Whether the helper extracts from the Python object directly or rounds through MLIR→gluon→extract.
-   - Recommendation: Extract directly from Python layout attributes (e.g., `layout.offset_bases` for `SharedLinearLayout`). The `SwizzledSharedLayout` and `NVMMASharedLayout` types can be converted via `toLinearLayout` → create a temporary `SharedLinearLayout` → extract. This is agent's discretion.
+   - RESOLVED: Extract directly from Python layout attributes (e.g., `layout.offset_bases` for `SharedLinearLayout`). The `SwizzledSharedLayout` and `NVMMASharedLayout` types can be converted via `toLinearLayout` → create a temporary `SharedLinearLayout` → extract. This is agent's discretion.
 
 2. **`set_module_string_attr` existence**
    - What we know: `ir.cc` has `set_str_attr` on Operation/ModuleOp [CITED: AGENTS.md]. The mangled names are stored via the existing attribute pattern.
    - What's unclear: Does a dedicated `set_module_string_attr` helper exist, or does the C++ code use `mod->setAttr("key", StringAttr::get(ctx, json_str))` directly?
-   - Recommendation: The lowering already reads `module->getAttrOfType<StringAttr>("ttg.extern_call_mangled_names")` — the Python side should write with the same pattern. Check `ir.cc` for a binding or use `mod.set_attr()`.
+   - RESOLVED: The lowering already reads `module->getAttrOfType<StringAttr>("ttg.extern_call_mangled_names")` — the Python side should write with the same pattern. Use `mod.set_str_attr("ttg.extern_call_arg_spaces", _json.dumps(data))` following the exact same pattern as mangled_names at compiler.py:625-630.
 
 3. **SRet (struct return) path interaction with shared args**
    - What we know: `ExternCallOpToLLVM.cpp:171-234` handles tuple returns with sret. The `mainArgs` array (line 197-199) appends `promotedOperands` after the sret pointer.
    - What's unclear: Whether the shared branch in `promotedOperands` modification (replacing struct with AS3 ptr) interacts correctly with the sret path — the call signature builder uses `promotedTypes` from modified `promotedOperands`.
-   - Recommendation: The shared branch replaces the memdesc struct Value with a `ptr addrspace(3)` Value in the same `promotedOperands` vector. Both the non-tuple (line 248) and sret (line 194) paths build function types from `promotedTypes` which is derived from `promotedOperands` after modification — this should be correct. Lit test should cover single-result (non-tuple) first; tuple+shared is a Phase 7 concern per D-22.
+   - RESOLVED: The shared branch replaces the memdesc struct Value with a `ptr addrspace(3)` Value in the same `promotedOperands` vector. Both the non-tuple (line 248) and sret (line 194) paths build function types from `promotedTypes` which is derived from `promotedOperands` after modification — this should be correct. Lit test should cover single-result (non-tuple) first; tuple+shared is a Phase 7 concern per D-22.
 
 ## Environment Availability
 
