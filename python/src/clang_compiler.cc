@@ -1454,6 +1454,28 @@ extractExternCallSpecs(mlir::ModuleOp module) {
       StringAttr::get(module.getContext(), "lane");
   StringAttr kWarp =
       StringAttr::get(module.getContext(), "warp");
+  StringAttr kOffset =
+      StringAttr::get(module.getContext(), "offset");
+  StringAttr kBlock =
+      StringAttr::get(module.getContext(), "block");
+
+  auto mapDtype = [](mlir::Type elemTy) -> std::string {
+    if (isa<Float32Type>(elemTy))
+      return "f32";
+    if (isa<Float64Type>(elemTy))
+      return "f64";
+    if (isa<Float16Type>(elemTy))
+      return "f16";
+    if (isa<BFloat16Type>(elemTy))
+      return "bf16";
+    if (elemTy.isInteger(32))
+      return "i32";
+    if (elemTy.isInteger(64))
+      return "i64";
+    if (elemTy.isInteger(8))
+      return "i8";
+    return "f32";
+  };
 
   module.walk([&](mlir::triton::gpu::ExternCallOp op) {
     ExternCallSpec spec;
@@ -1461,51 +1483,51 @@ extractExternCallSpecs(mlir::ModuleOp module) {
     spec.libpath = op.getLibpath().str();
     spec.useFastMath = op.getUseFastMath();
 
+    auto flattenBases = [](auto bases) {
+      llvm::SmallVector<int32_t, 16> flat;
+      for (auto &row : bases)
+        flat.append(row.begin(), row.end());
+      return flat;
+    };
+
     for (auto operand : op.getInputs()) {
-      auto tensorTy = cast<RankedTensorType>(operand.getType());
-      auto shape = tensorTy.getShape();
-      auto encoding = tensorTy.getEncoding();
+      auto type = operand.getType();
 
-      auto ll =
-          mlir::triton::gpu::toLinearLayout(shape, encoding);
+      if (auto tensorTy = dyn_cast<RankedTensorType>(type)) {
+        auto shape = tensorTy.getShape();
+        auto encoding = tensorTy.getEncoding();
+        auto ll =
+            mlir::triton::gpu::toLinearLayout(shape, encoding);
 
-      SpecInput input;
-      input.shape.assign(shape.begin(), shape.end());
-      input.numWarps = ll.getInDimSize(kWarp);
+        TensorSpecInput input;
+        input.shape.assign(shape.begin(), shape.end());
+        input.numWarps = ll.getInDimSize(kWarp);
+        input.regBases =
+            flattenBases(ll.getBases().lookup(kRegister));
+        input.laneBases =
+            flattenBases(ll.getBases().lookup(kLane));
+        input.warpBases =
+            flattenBases(ll.getBases().lookup(kWarp));
+        input.dtype = mapDtype(tensorTy.getElementType());
+        spec.inputs.push_back(std::move(input));
 
-      auto flattenBases = [](auto bases) {
-        llvm::SmallVector<int32_t, 16> flat;
-        for (auto &row : bases)
-          flat.append(row.begin(), row.end());
-        return flat;
-      };
+      } else if (auto memDescTy = dyn_cast<mlir::triton::gpu::MemDescType>(type)) {
+        auto shape = memDescTy.getShape();
+        auto encoding = memDescTy.getEncoding();
+        auto ll = mlir::triton::gpu::toLinearLayout(memDescTy);
 
-      input.regBases =
-          flattenBases(ll.getBases().lookup(kRegister));
-      input.laneBases =
-          flattenBases(ll.getBases().lookup(kLane));
-      input.warpBases =
-          flattenBases(ll.getBases().lookup(kWarp));
-
-      auto elemTy = tensorTy.getElementType();
-      if (isa<Float32Type>(elemTy))
-        input.dtype = "f32";
-      else if (isa<Float64Type>(elemTy))
-        input.dtype = "f64";
-      else if (isa<Float16Type>(elemTy))
-        input.dtype = "f16";
-      else if (isa<BFloat16Type>(elemTy))
-        input.dtype = "bf16";
-      else if (elemTy.isInteger(32))
-        input.dtype = "i32";
-      else if (elemTy.isInteger(64))
-        input.dtype = "i64";
-      else if (elemTy.isInteger(8))
-        input.dtype = "i8";
-      else
-        input.dtype = "f32";
-
-      spec.inputs.push_back(std::move(input));
+        SharedSpecInput input;
+        input.shape.assign(shape.begin(), shape.end());
+        input.memorySpace = "shared";
+        input.offsetBases =
+            flattenBases(ll.getBases().lookup(kOffset));
+        input.blockBases =
+            flattenBases(ll.getBases().lookup(kBlock));
+        auto sharedEnc = cast<mlir::triton::gpu::SharedEncodingTrait>(encoding);
+        input.alignment = sharedEnc.getAlignment();
+        input.dtype = mapDtype(memDescTy.getElementType());
+        spec.inputs.push_back(std::move(input));
+      }
     }
     results.push_back(std::move(spec));
   });
