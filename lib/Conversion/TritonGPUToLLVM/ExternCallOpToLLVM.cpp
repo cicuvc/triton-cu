@@ -68,6 +68,36 @@ static LogicalResult getExtractorNames(ModuleOp module,
   return success();
 }
 
+static LogicalResult getArgMemorySpaces(ModuleOp module,
+    const std::string &symbol, std::vector<std::string> &spaces) {
+  auto attr = module->getAttrOfType<StringAttr>(
+      "ttg.extern_call_arg_spaces");
+  if (!attr)
+    return success();
+
+  auto json = llvm::json::parse(attr.getValue());
+  if (!json)
+    return success();
+
+  auto *obj = json->getAsObject();
+  if (!obj)
+    return success();
+
+  auto it = obj->find(symbol);
+  if (it == obj->end())
+    return success();
+
+  auto arr = it->second.getAsArray();
+  if (!arr)
+    return success();
+
+  for (auto &v : *arr) {
+    auto s = v.getAsString();
+    spaces.push_back(s ? s->str() : "register");
+  }
+  return success();
+}
+
 static LLVM::LLVMStructType
 buildClangStructType(MLIRContext *ctx, Type flatStructType) {
   auto flatST = cast<LLVM::LLVMStructType>(flatStructType);
