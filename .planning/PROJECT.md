@@ -45,11 +45,13 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ **SHTYPE-01/SHTYPE-02**: `SharedLinearLayout` (OffsetBases/BlockBases NTTP carriers, `evaluate()`) and `SharedTensor<T,Shape,Layout>` (variadic `operator()` → `T&`) device templates compile as valid CUDA C++20 — Validated in Phase 4
 - ✓ **SHAST-01/SHAST-02/SHAST-03**: `SharedTensorParameter` structs + pybind11 binding, `TypeBuilder::BuildSharedTensor` forward AST construction, `TypeInspector::ParseSharedTensorType` reverse parsing — full clang AST round-trip verified via GPU-free pytest harness (`test_shared_tensor.py`, 4/4 pass) — Validated in Phase 4
 - ✓ **D-07 swizzle parity**: C++ `SharedLinearLayout::evaluate()` proven bit-identical to MLIR `LinearLayout({offsetBases, blockBases}, outDims)` composition via 5 static_assert checks — Validated in Phase 4
+- ✓ **SHMLIR-01**: `ttg.extern_call` ODS relaxed to `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` — mixed tensor+memdesc operands parse; tensor-only regression lit test passes — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
+- ✓ **SHMLIR-02**: `extractExternCallSpecs()` uses `std::variant<TensorSpecInput, SharedSpecInput>` with a `dyn_cast<MemDescType>` branch emitting shared-layout JSON (`memory_space`/`offset_bases`/`block_bases`/`alignment`) via `std::visit` — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
 
 ### Active
 
 **Milestone v1.1 (Shared Memory Interop)** — requirements defined in `.planning/REQUIREMENTS.md`:
-- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR/lowering/frontend remain (Phases 5-7)
+- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR op + spec extraction done (Phase 5); lowering/frontend remain (Phases 6-7)
 - `shared_memory_descriptor` ↔ `SharedTensor` frontend round-trip (Phase 6; clang AST side validated in Phase 4)
 - MLIR memref lowering with addrspace-3 conversion (load + store)
 - Integration with the v1.0 return-type inference machinery
@@ -119,4 +121,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-15 after Phase 4 (C++ Templates + Clang AST Foundation) — SharedLinearLayout/SharedTensor device templates and clang AST round-trip shipped; D-07 swizzle parity proven; known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*
+*Last updated: 2026-07-15 after Phase 5 (MLIR Op Relaxation + Spec Extraction) — `ttg.extern_call` accepts mixed tensor+memdesc operands (SHMLIR-01) and `extractExternCallSpecs()` emits shared-layout JSON via variant-based spec inputs (SHMLIR-02); zero regressions (10/10 GPU tests, both new lit tests pass). Known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*
