@@ -170,15 +170,41 @@ struct ExternCallOpConversion
 
     unsigned numTensorArgs = op.getInputs().size();
     auto ptrTy = LLVM::LLVMPointerType::get(ctx, 0);
+
+    // D-16: Read per-arg memory spaces from module attribute.
+    std::vector<std::string> argSpaces;
+    (void)getArgMemorySpaces(module, op.getSymbol().str(), argSpaces);
+    if (argSpaces.empty()) {
+      // Fallback for pre-Phase-6 modules: all operands are register.
+      argSpaces.assign(numTensorArgs, "register");
+    }
+
     for (unsigned i = 0; i < numTensorArgs; ++i) {
-      auto structVal = promotedOperands[i];
-      auto structTy = structVal.getType();
-      Value one = b.i32_val(1);
-      auto *builder = &static_cast<OpBuilder &>(rewriter);
-      Value stackPtr = LLVM::AllocaOp::create(
-          *builder, loc, ptrTy, structTy, one, 0).getResult();
-      b.store(structVal, stackPtr);
-      promotedOperands[i] = stackPtr;
+      bool isShared = (i < argSpaces.size() && argSpaces[i] == "shared");
+      if (isShared) {
+        // SHLOWER-01/02: bypass alloca+store+ptr path.
+        // Extract shared memory object from promoted memdesc struct,
+        // apply subview offset via getShmemAffineBase, pass AS3 ptr
+        // directly to callee (no stack slot — avoids L-01 AS3 erasure).
+        auto memDescType = cast<triton::gpu::MemDescType>(op.getInputs()[i].getType());
+        auto llvmElemTy = getTypeConverter()->convertType(
+            memDescType.getElementType());
+        auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
+            loc, promotedOperands[i], llvmElemTy, rewriter);
+        promotedOperands[i] = smemObj.getShmemAffineBase(
+            loc, rewriter, memDescType);
+        // Result is ptr addrspace(3) — passes directly to callee.
+      } else {
+        // Existing distributed path: alloca + store + ptr (AS0).
+        auto structVal = promotedOperands[i];
+        auto structTy = structVal.getType();
+        Value one = b.i32_val(1);
+        auto *builder = &static_cast<OpBuilder &>(rewriter);
+        Value stackPtr = LLVM::AllocaOp::create(
+            *builder, loc, ptrTy, structTy, one, 0).getResult();
+        b.store(structVal, stackPtr);
+        promotedOperands[i] = stackPtr;
+      }
     }
 
     SmallVector<Type> promotedTypes;
