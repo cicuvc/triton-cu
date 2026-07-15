@@ -641,6 +641,10 @@ class CUDABackend(BaseBackend):
             if metadata.get("extern_call_extractor_names"):
                 mod.set_str_attr("ttg.extern_call_extractor_names",
                                  _json.dumps(metadata["extern_call_extractor_names"]))
+            # D-16: Per-symbol per-arg memory-space list for the C++ lowering.
+            if metadata.get("extern_call_arg_spaces"):
+                mod.set_str_attr("ttg.extern_call_arg_spaces",
+                                 _json.dumps(metadata["extern_call_arg_spaces"]))
 
         pm.run(mod, 'make_llir')
 
@@ -889,9 +893,19 @@ class CUDABackend(BaseBackend):
             if error:
                 raise RuntimeError(error)
 
+        # D-16: Build per-symbol per-arg memory-space lists for the C++ lowering.
+        arg_spaces_map = {}
+        for spec in specs_list:
+            symbol = spec["symbol"]
+            spaces = []
+            for inp in spec["inputs"]:
+                spaces.append("shared" if inp.get("memory_space") == "shared" else "register")
+            arg_spaces_map[symbol] = spaces
+
         metadata["extern_call_bitcodes"] = compiled_bitcodes
         metadata["extern_call_mangled"] = mangled_names
         metadata["extern_call_extractor_names"] = extractor_names
+        metadata["extern_call_arg_spaces"] = arg_spaces_map
 
         # D-07: Per-compile delta — store the number of clang parses that
         # occurred during THIS compile only (from hook-creation time through
