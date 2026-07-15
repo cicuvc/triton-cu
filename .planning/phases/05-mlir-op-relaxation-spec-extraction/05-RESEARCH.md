@@ -541,22 +541,13 @@ Neither is touched in Phase 5. The ODS relaxation ensures parse-time type safety
 | A2 | The `toLinearLayout(MemDescType)` overload at `LinearLayoutConversions.cpp:1376` correctly handles subview-adjusted shapes [ASSUMED] | Shared Layout Extraction | Medium — if the overload produces incorrect offsets for subviewed memdescs, Phase 7 E2E tests will catch it. Phase 5 lit tests don't exercise subviews. |
 | A3 | `SharedEncodingTrait::getAlignment()` default of 16 is correct for all shared encodings in this phase [ASSUMED] | Shared Layout Extraction | Low — the interface default is 16, individual encodings override. `SharedLinearEncodingAttr` provides its own `getAlignment()` returning `getLayoutAlignment()`. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should the lit tests use `-verify-diagnostics` or `FileCheck`?**
-   - What we know: `-verify-diagnostics` confirms parse succeeds (no errors). `FileCheck` can verify round-trip output but is overkill for parse-only validation per D-11.
-   - What's unclear: Whether the test should verify the printed MLIR round-trips correctly (e.g., that `AnyTypeOf` operands don't get dropped/reordered during print).
-   - Recommendation: Use `-verify-diagnostics` for parse-only (per D-11). Add a `FileCheck` round-trip test if there's concern about the assembly format with mixed types.
+1. **Should the lit tests use `-verify-diagnostics` or `FileCheck`?** — RESOLVED: Use `-verify-diagnostics` for parse-only lit tests, per D-11 (parse verification is sufficient; no FileCheck round-trip needed in Phase 5).
 
-2. **What MLIR syntax exactly for the memdesc operand?**
-   - What we know: MemDescType syntax is `!ttg.memdesc<dimsxT, #encoding, #memory_space, [mutable]>` per `TritonGPUTypes.td:82` (`hasCustomAssemblyFormat = 1`). The memory space for shared is `#ttg.shared_memory`.
-   - What's unclear: Whether `ttg.extern_call`'s `functional-type($inputs, $results)` printer correctly handles the memdesc type syntax (custom format).
-   - Recommendation: Test with `triton-opt` on the proposed lit test MLIR to confirm parsing round-trips before locking the test syntax.
+2. **What MLIR syntax exactly for the memdesc operand?** — RESOLVED: Use the `!ttg.memdesc<dimsxT, #ttg.shared_linear<{offset = ..., block = ...}, alignment = N>, #ttg.shared_memory>` syntax verified against `test/TritonGPU/ops.mlir:89`. The `functional-type($inputs, $results)` assembly format correctly handles custom memdesc type syntax (confirmed by existing ops.mlir lit tests).
 
-3. **JSON discriminator: `"memory_space"` key vs explicit `"kind"` field?**
-   - What we know: D-10 specifies `SharedSpecInput::memorySpace = "shared"`. The tensor variant has no memory_space field.
-   - What's unclear: Whether Phase 6 consumer should check for the presence of `"memory_space"` key (implicit discriminator) or we should add an explicit `"kind": "tensor"`/`"kind": "shared"` field for clarity.
-   - Recommendation: Use presence of `"memory_space"` as the implicit discriminator (simpler JSON). Document in the JSON output contract. If ambiguity arises in Phase 6, add an explicit `"kind"` field retroactively.
+3. **JSON discriminator: `"memory_space"` key vs explicit `"kind"` field?** — RESOLVED: Use presence of `"memory_space"` as the implicit discriminator. Tensor variant emits no `"memory_space"` key; shared variant emits `"memory_space": "shared"`. Phase 6 consumer at `compiler.py:786-795` checks `inp.get("memory_space")` to dispatch. Explicit `"kind"` field is unnecessary given D-10's two-variant design.
 
 ## Sources
 
