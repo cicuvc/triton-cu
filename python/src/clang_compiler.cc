@@ -1559,36 +1559,61 @@ tritonExtractExternCallSpecs(mlir::ModuleOp module) {
     os << "\"use_fast_math\": " << (spec.useFastMath ? "true" : "false") << ", ";
     os << "\"inputs\": [";
     bool firstInput = true;
-    for (auto &input : spec.inputs) {
+    for (auto &inputV : spec.inputs) {
       if (!firstInput)
         os << ", ";
       firstInput = false;
-      os << "{";
-      os << "\"dtype\": \"" << input.dtype << "\", ";
-      os << "\"shape\": [";
-      for (size_t i = 0; i < input.shape.size(); ++i) {
-        if (i > 0)
-          os << ", ";
-        os << input.shape[i];
-      }
-      os << "], ";
-      os << "\"num_warps\": " << input.numWarps << ", ";
-      auto flatten = [&](auto &bases) {
-        os << "[";
-        for (size_t i = 0; i < bases.size(); ++i) {
+
+      std::visit([&](auto &input) {
+        // common fields (dtype, shape) — same for both variants
+        os << "{";
+        os << "\"dtype\": \"" << input.dtype << "\", ";
+        os << "\"shape\": [";
+        for (size_t i = 0; i < input.shape.size(); ++i) {
           if (i > 0)
             os << ", ";
-          os << bases[i];
+          os << input.shape[i];
         }
         os << "]";
-      };
-      os << "\"reg_bases\": ";
-      flatten(input.regBases);
-      os << ", \"lane_bases\": ";
-      flatten(input.laneBases);
-      os << ", \"warp_bases\": ";
-      flatten(input.warpBases);
-      os << "}";
+
+        if constexpr (std::is_same_v<std::decay_t<decltype(input)>, TensorSpecInput>) {
+          // Tensor variant: emit distributed-layout fields
+          os << ", \"num_warps\": " << input.numWarps;
+          auto flatten = [&](auto &bases) {
+            os << "[";
+            for (size_t i = 0; i < bases.size(); ++i) {
+              if (i > 0)
+                os << ", ";
+              os << bases[i];
+            }
+            os << "]";
+          };
+          os << ", \"reg_bases\": ";
+          flatten(input.regBases);
+          os << ", \"lane_bases\": ";
+          flatten(input.laneBases);
+          os << ", \"warp_bases\": ";
+          flatten(input.warpBases);
+        } else {
+          // Shared variant: emit shared-memory layout fields
+          os << ", \"memory_space\": \"" << input.memorySpace << "\"";
+          auto flatten = [&](auto &bases) {
+            os << "[";
+            for (size_t i = 0; i < bases.size(); ++i) {
+              if (i > 0)
+                os << ", ";
+              os << bases[i];
+            }
+            os << "]";
+          };
+          os << ", \"offset_bases\": ";
+          flatten(input.offsetBases);
+          os << ", \"block_bases\": ";
+          flatten(input.blockBases);
+          os << ", \"alignment\": " << input.alignment;
+        }
+        os << "}";
+      }, inputV);
     }
     os << "]}";
   }
