@@ -1018,9 +1018,17 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
 // No PlaceholderLayout logic — shared tensors always need a concrete
 // SharedLinearLayout.
 //
-// D-15: Applies LangAS::cuda_shared addrspace qualifier to the
-// SharedTensor& pointee so the mangled callee signature natively
+// D-15: Applies the LangAS::cuda_shared addrspace qualifier to the
+// SharedTensor specialization so the mangled callee signature natively
 // takes ptr addrspace(3) — no addrspacecast at call sites.
+//
+// NOTE: The result is consumed as an OpaqueValueExpr argument type in
+// FunctionResolver::LookupFunction (template deduction / overload
+// resolution). Expressions must NOT have reference type — clang asserts
+// "Expressions can't have reference type" (ExprClassification.cpp) and
+// aborts. The `&` binding of the `SharedTensor<...>&` parameter is
+// modelled by the OpaqueValueExpr's VK_LValue value kind, so the arg
+// type itself must stay a non-reference (addrspace-qualified) type.
 clang::QualType
 CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
   clang::QualType Result;
@@ -1032,9 +1040,8 @@ CUDACompiler::BuildSharedTensor(const SharedTensorParameter &Param) {
         getQualTypeFromScalarType(helper.Builder.Ctx, Param.Type),
         Shape.type, Layout);
     auto &Ctx = helper.Builder.Ctx;
-    auto as3Type = Ctx.getAddrSpaceQualType(
+    Result = Ctx.getAddrSpaceQualType(
         sharedTensorType, clang::LangAS::cuda_shared);
-    Result = Ctx.getLValueReferenceType(as3Type);
   });
   InvocationContext->SwitchTo(*CompileExecutionContext);
   return Result;

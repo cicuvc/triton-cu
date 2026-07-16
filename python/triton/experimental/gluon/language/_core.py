@@ -802,7 +802,7 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
 
     tensors = []
     for a in args:
-        if isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor)):
+        if isinstance(a, (tensor, shared_memory_descriptor)):
             tensors.append(a)
         else:
             tensors.append(_semantic.to_tensor(a))
