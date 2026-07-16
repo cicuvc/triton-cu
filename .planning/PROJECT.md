@@ -47,13 +47,16 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ **D-07 swizzle parity**: C++ `SharedLinearLayout::evaluate()` proven bit-identical to MLIR `LinearLayout({offsetBases, blockBases}, outDims)` composition via 5 static_assert checks — Validated in Phase 4
 - ✓ **SHMLIR-01**: `ttg.extern_call` ODS relaxed to `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` — mixed tensor+memdesc operands parse; tensor-only regression lit test passes — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
 - ✓ **SHMLIR-02**: `extractExternCallSpecs()` uses `std::variant<TensorSpecInput, SharedSpecInput>` with a `dyn_cast<MemDescType>` branch emitting shared-layout JSON (`memory_space`/`offset_bases`/`block_bases`/`alignment`) via `std::visit` — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
+- ✓ **SHAPI-01**: `gl.call()` accepts `shared_memory_descriptor` args alongside tensors — `to_tensor` bypass in `_core.py`, relaxed isinstance + `PaddedSharedLayout` rejection guard in `call_extern()`, `memory_space: "shared"` threaded via `arg_params` — Validated in Phase 6: CUDA Wiring + LLVM Lowering + Frontend API
+- ✓ **SHWIRE-01**: Shared args wired through CUDA compilation — `infer_result()` degenerate `SharedTensorParameter`, `_pre_compile_extern_calls()` consumes Phase-5 spec JSON, `ttg.extern_call_arg_spaces` module attr carries per-operand memory spaces, `BuildSharedTensor` applies `LangAS::cuda_shared` (addrspace qualifier on the pointee; non-reference type so OpaqueValueExpr lookup stays valid) — Validated in Phase 6
+- ✓ **SHLOWER-01/SHLOWER-02**: `ttg.extern_call` shared operands lower directly as `ptr addrspace(3)` (bypassing alloca+store) with subview offsets applied via `getShmemAffineBase` GEP; distributed operands keep the existing path in mixed arg lists — lit test `extern-call-shared-args.mlir` + 10/10 GPU regression tests pass — Validated in Phase 6
 
 ### Active
 
 **Milestone v1.1 (Shared Memory Interop)** — requirements defined in `.planning/REQUIREMENTS.md`:
-- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR op + spec extraction done (Phase 5); lowering/frontend remain (Phases 6-7)
-- `shared_memory_descriptor` ↔ `SharedTensor` frontend round-trip (Phase 6; clang AST side validated in Phase 4)
-- MLIR memref lowering with addrspace-3 conversion (load + store)
+- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR op + spec extraction done (Phase 5); CUDA wiring + LLVM lowering + frontend API done (Phase 6); E2E GPU verification remains (Phase 7)
+- `shared_memory_descriptor` ↔ `SharedTensor` frontend round-trip — done (Phase 6; clang AST side validated in Phase 4)
+- MLIR memref lowering with addrspace-3 conversion (load + store) — `ptr addrspace(3)` emission done (Phase 6)
 - Integration with the v1.0 return-type inference machinery
 
 **Deferred / future candidates:**
@@ -121,4 +124,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-15 after Phase 5 (MLIR Op Relaxation + Spec Extraction) — `ttg.extern_call` accepts mixed tensor+memdesc operands (SHMLIR-01) and `extractExternCallSpecs()` emits shared-layout JSON via variant-based spec inputs (SHMLIR-02); zero regressions (10/10 GPU tests, both new lit tests pass). Known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*
+*Last updated: 2026-07-16 after Phase 6 (CUDA Wiring + LLVM Lowering + Frontend API) — shared-memory args flow end-to-end from `gl.call()` through CUDA compilation to `ptr addrspace(3)` LLVM lowering with subview-offset GEPs (SHAPI-01, SHWIRE-01, SHLOWER-01/02); verification 4/4 must-haves; zero regressions (10/10 GPU tests, 3/3 extern-call lit tests). Post-merge gate caught and fixed two regressions (undefined `ttgl` NameError in gl.call(); clang reference-type assertion abort from BuildSharedTensor's lvalue-ref wrapper). Known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*
