@@ -165,3 +165,48 @@ def test_gl_call_no_inference_hook_raises():
         with pytest.raises(triton.compiler.errors.CompilationError,
                            match=r"gl\.call\(\) extern CUDA calls require the CUDA backend"):
             _kernel[(1,)](x, out, num_warps=1)
+
+
+# ==================== PHASE 7: SHARED MEMORY E2E TESTS ====================
+# SHTEST-01: test_shared_read_write + test_shared_accumulate
+# SHTEST-02: test_swizzle_round_trip (4 parametrized patterns)
+# D-31: L-01 landmine — every shared-memory test verifies ld.shared/st.shared in PTX
+
+
+def test_shared_read_write():
+    torch.set_default_device('cuda')
+    x = torch.randn((32, 16), dtype=torch.float32)
+    out = torch.empty_like(x)
+    SCALE = 2.0
+
+    compiled = shared_read_write_kernel[(1,)](x, out, SCALE, num_warps=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x * SCALE)
+
+    # D-31: L-01 landmine — verify shared memory addrspace in PTX
+    ptx = compiled.asm["ptx"]
+    assert "ld.shared" in ptx or "st.shared" in ptx, (
+        f"L-01 LANDMINE: Expected ld.shared or st.shared in PTX but found "
+        f"neither. AS3 pointer may have been erased through memory. "
+        f"First 200 chars:\n{ptx[:200]}"
+    )
+
+
+def test_shared_accumulate():
+    torch.set_default_device('cuda')
+    x = torch.randn((256,), dtype=torch.float32)
+    out = torch.empty_like(x)
+
+    compiled = shared_accumulate_kernel[(1,)](x, out, num_warps=1)
+    torch.cuda.synchronize()
+    # shared memory starts zero; shared_accumulate does shm(i) += val.data[i]
+    # → each element becomes val.data[i] = x[i]
+    torch.testing.assert_close(out, x)
+
+    # D-31: L-01 landmine — verify shared memory addrspace in PTX
+    ptx = compiled.asm["ptx"]
+    assert "ld.shared" in ptx or "st.shared" in ptx, (
+        f"L-01 LANDMINE: Expected ld.shared or st.shared in PTX but found "
+        f"neither. AS3 pointer may have been erased through memory. "
+        f"First 200 chars:\n{ptx[:200]}"
+    )
