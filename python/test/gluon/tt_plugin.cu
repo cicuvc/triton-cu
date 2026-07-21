@@ -224,6 +224,23 @@ __device__ void process_shared_2d(SharedTensor<T, Shape<32, 16>, TLayout>& shm, 
             shm(i, j) = shm(i, j) * scale;
 }
 
+template<typename T, uint32_t N, typename SharedTLayout, typename TLayout>
+__device__ void shared_accumulate(
+    SharedTensor<T, Shape<N>, SharedTLayout>& shm,
+    const Tensor<T, Shape<N>, TLayout>& val)
+{
+    #pragma unroll TLayout::REG_SIZE
+    for (uint32_t i = 0; i < TLayout::REG_SIZE; i++)
+        shm(i) += val.data[i];
+}
+
+template<typename T, typename TLayout>
+__device__ void write_swizzled_2d(SharedTensor<T, Shape<32, 16>, TLayout>& shm) {
+    for (int i = 0; i < 32; i++)
+        for (int j = 0; j < 16; j++)
+            shm(i, j) = static_cast<T>(i * 16 + j);
+}
+
 // ========================= END OF DEFINITIONS =============================
 
 template<typename T, uint32_t TILE_WIDTH, typename TLayout>
