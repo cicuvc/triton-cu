@@ -263,6 +263,20 @@ def test_shared_accumulate():
 # D-28: byte-offset values from Python reference must match kernel output bit-for-bit
 
 
+@gluon.jit
+def swizzle_kernel(out_ptr, SHARED_LAYOUT: gl.constexpr, DIST_LAYOUT: gl.constexpr):
+    shm = gl.allocate_shared_memory(gl.float32, [32, 16], SHARED_LAYOUT)
+    gl.call("python/test/gluon/tt_plugin.cu", "write_swizzled_2d", shm,
+            result_layout=[])
+    gl.barrier()
+    result = shm.load(DIST_LAYOUT)
+    # Store back: DIST_LAYOUT is identity BlockedLayout, so offs matches row-major
+    offs_m = gl.arange(0, 32, layout=gl.SliceLayout(1, DIST_LAYOUT))[:, None]
+    offs_n = gl.arange(0, 16, layout=gl.SliceLayout(0, DIST_LAYOUT))[None, :]
+    offs = offs_m * 16 + offs_n
+    gl.store(out_ptr + offs, result)
+
+
 def evaluate_shared(flat_index: int, offset_bases):
     """Replicate tt_plugin.cu:160-166 — XOR-add basis rows for set bits."""
     if not offset_bases:
