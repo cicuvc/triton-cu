@@ -174,7 +174,17 @@ Plans:
   3. All 6 existing `test_extern_call.py` tests pass unchanged — no regression in the tensor-only path
   4. The Gluon lit suite (5/5 tests) passes unchanged — no MLIR/dialect-level regression
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 07-01-PLAN.md — CUDA device functions: shared_accumulate + write_swizzled_2d in tt_plugin.cu
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 07-02-PLAN.md — E2E GPU tests: SHTEST-01 (read_write + mixed_args), SHTEST-02 (parametrized swizzle), SHTEST-03 (full regression)
+
 **UI hint**: no
 
 ## Progress
@@ -187,4 +197,4 @@ Plans:
 | 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete    | 2026-07-12 |
 | 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 2/2 | Complete    | 2026-07-15 |
 | 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 3/3 | Complete    | 2026-07-15 |
-| 7. E2E Verification | v1.1 | 0/TBD | Not started | - |
+| 7. E2E Verification | v1.1 | 0/2 | Not started | - |
