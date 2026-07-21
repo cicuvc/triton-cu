@@ -640,17 +640,19 @@ cd build && ninja triton-opt && lit -v test/Gluon/ test/TritonGPU/extern-call-sh
 | A4 | `write_swizzled_2d` CUDA device function pattern (for SHTEST-02) follows `process_shared_2d` but iterates all (i,j) writing `i*16+j` values | File Manifest | Low — simple function with known pattern; any compile error is trivial to fix |
 | A5 | `num_warps=1` avoids multi-warp synchronization issues for shared memory tests | Common Pitfalls | Low — 1 warp is simplest; if it doesn't exercise enough code paths, can raise to 2 in subsequent iteration |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does gl.call() support void-returning device functions?**
    - What we know: All 6 existing tests use tensor-returning functions. `process_shared_2d` and `shared_accumulate` are `__device__ void`. The Phase 6 frontend (SHAPI-01) relaxed `gl.call()` to accept shared args but may still require result types.
    - What's unclear: Whether `call_extern()` in `_semantic.py` will reject a call without `result_layout=` (or without return type inference finding types).
-   - Recommendation: Test with a minimal kernel first: `gl.call("tt_plugin.cu", "write_shared_1d", shm, 1.0)` and see if it compiles. If it fails, wrap `shared_accumulate` in a C++ function returning a `Tensor<T, Shape<1>, DummyLayout>` dummy. [ASSUMED]
+   - Recommendation: Test with a minimal kernel first: `gl.call("tt_plugin.cu", "write_shared_1d", shm, 1.0)` and see if it compiles. If it fails, wrap `shared_accumulate` in a C++ function returning a `Tensor<T, Shape<1>, DummyLayout>` dummy.
+   - **RESOLVED:** Plan 07-02 Task 1 action includes a fallback path: attempt `result_layout=[]` first; if void return fails, wrap device functions in 1-element dummy-tensor wrappers (code provided in the plan). No pre-plan testing needed — the executor will handle whatever the actual path requires.
 
 2. **Does `gl.call()` compile when `tt_plugin.cu` uses separate template params for SharedTLayout vs TLayout?**
    - What we know: The existing `process_shared_2d<T, TLayout>` compiles fine. Adding a second layout parameter for the distributed tensor is a C++20 template deduction question.
    - What's unclear: Whether clang's template argument deduction will correctly infer both layout types from the function arguments.
    - Recommendation: Use explicit template parameters in `shared_accumulate` if deduction fails. The `_pre_compile_extern_calls()` path handles explicit template parameters via `ExplicitTemplateArgs`.
+   - **RESOLVED:** Plan 07-01 uses four template parameters (`<T, N, SharedTLayout, TLayout>`) with `SharedTLayout` for SharedTensor and `TLayout` for Tensor's REG_SIZE. Both are deducible from function arguments (SharedTensor and Tensor types). If template deduction fails at JIT time, the executor will add explicit template args to the spec JSON. RESEARCH.md §Assumptions Log A3 covers this with risk=Low.
 
 ## Sources
 
