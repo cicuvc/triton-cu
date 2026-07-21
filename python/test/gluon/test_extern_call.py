@@ -173,6 +173,52 @@ def test_gl_call_no_inference_hook_raises():
 # D-31: L-01 landmine — every shared-memory test verifies ld.shared/st.shared in PTX
 
 
+@gluon.jit
+def shared_read_write_kernel(x_ptr, out_ptr, SCALE: gl.constexpr):
+    shared_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[1, 0], [2, 0], [4, 0], [8, 0],
+                       [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]],
+        block_bases=[], alignment=16)
+    dist_layout: gl.constexpr = gl.BlockedLayout([1, 1], [16, 2], [1, 1], [1, 0])
+
+    # Load input tensor into distributed registers
+    offs_m = gl.arange(0, 32, layout=gl.SliceLayout(1, dist_layout))[:, None]
+    offs_n = gl.arange(0, 16, layout=gl.SliceLayout(0, dist_layout))[None, :]
+    offs = offs_m * 16 + offs_n
+    x = gl.load(x_ptr + offs)
+
+    # Seed shared memory with input values, then mutate via gl.call()
+    shm = gl.allocate_shared_memory(gl.float32, [32, 16], shared_layout)
+    shm.store(x)
+    gl.call("python/test/gluon/tt_plugin.cu", "process_shared_2d", shm, SCALE,
+            result_layout=[])
+    gl.barrier()
+
+    # Read back and store to output (D-25: verify write-back visibility)
+    result = shm.load(dist_layout)
+    gl.store(out_ptr + offs, result)
+
+
+@gluon.jit
+def shared_accumulate_kernel(x_ptr, out_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [1], [0])
+    shared_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[1], [2], [4], [8], [16], [32], [64], [128]],
+        block_bases=[], alignment=16)
+
+    idx = gl.arange(0, 256, layout=layout)
+    vals = gl.load(x_ptr + idx)
+
+    # Allocate shared memory (starts zero), accumulate distributed tensor into it
+    shm = gl.allocate_shared_memory(gl.float32, [256], shared_layout)
+    gl.call("python/test/gluon/tt_plugin.cu", "shared_accumulate", shm, vals,
+            result_layout=[])
+    gl.barrier()
+
+    result = shm.load(layout)
+    gl.store(out_ptr + idx, result)
+
+
 def test_shared_read_write():
     torch.set_default_device('cuda')
     x = torch.randn((32, 16), dtype=torch.float32)
