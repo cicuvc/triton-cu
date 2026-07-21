@@ -256,3 +256,74 @@ def test_shared_accumulate():
         f"neither. AS3 pointer may have been erased through memory. "
         f"First 200 chars:\n{ptx[:200]}"
     )
+
+
+# ==================== SHTEST-02: SWIZZLE ROUND-TRIP ====================
+# Python reference for SharedLinearLayout::evaluate() (tt_plugin.cu:160-166)
+# D-28: byte-offset values from Python reference must match kernel output bit-for-bit
+
+
+def evaluate_shared(flat_index: int, offset_bases):
+    """Replicate tt_plugin.cu:160-166 — XOR-add basis rows for set bits."""
+    if not offset_bases:
+        return [flat_index]  # degenerate: single-dim flat index
+    rank = len(offset_bases[0])
+    result = [0] * rank
+    for bit_pos, basis_row in enumerate(offset_bases):
+        if (flat_index >> bit_pos) & 0x1:
+            for d in range(rank):
+                result[d] ^= basis_row[d]
+    return result
+
+
+def compute_swizzle_expected(shape, offset_bases):
+    """Map flat_index → swizzled position, store float(flat_index) there.
+    After shm.load(identity_layout), reading at identity (r,c) recovers
+    the flat_index that swizzled to (r,c), which equals what
+    write_swizzled_2d stored: float(r*cols + c)."""
+    rows, cols = shape
+    expected = torch.zeros((rows, cols), dtype=torch.float32)
+    for f in range(rows * cols):
+        logical = evaluate_shared(f, offset_bases)
+        lr, lc = logical[0], logical[1]
+        expected[lr, lc] = float(f)
+    return expected
+
+
+@pytest.mark.parametrize("offset_bases,block_bases,label", [
+    ([[1, 0], [2, 0], [4, 0], [8, 0],
+      [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], [], "identity"),
+    ([[2, 0], [1, 0], [4, 0], [8, 0],
+      [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], [], "offset_only"),
+    ([[0, 1], [2, 0], [4, 0], [8, 0],
+      [1, 0], [0, 2], [0, 4], [0, 8], [0, 16]], [], "cross_dim"),
+    ([[0, 16], [2, 0], [0, 8], [8, 0],
+      [0, 4], [4, 0], [0, 2], [1, 0], [0, 1]], [], "full_xor"),
+])
+def test_swizzle_round_trip(offset_bases, block_bases, label):
+    torch.set_default_device('cuda')
+
+    shared_layout = gl.SharedLinearLayout(
+        offset_bases=offset_bases, block_bases=block_bases, alignment=16)
+    # Identity distributed layout for stable readback after barrier
+    dist_layout = gl.BlockedLayout([1, 1], [16, 2], [1, 1], [1, 0])
+
+    out = torch.empty((32, 16), dtype=torch.float32)
+
+    compiled = swizzle_kernel[(1,)](out,
+                                     SHARED_LAYOUT=shared_layout,
+                                     DIST_LAYOUT=dist_layout,
+                                     num_warps=1)
+    torch.cuda.synchronize()
+
+    # D-28: Python reference simulates SharedLinearLayout::evaluate()
+    expected = compute_swizzle_expected((32, 16), offset_bases)
+    torch.testing.assert_close(out, expected,
+        msg=f"Swizzle pattern '{label}' round-trip mismatch")
+
+    # D-31: L-01 landmine — shared memory addrspace in PTX
+    ptx = compiled.asm["ptx"]
+    assert "ld.shared" in ptx or "st.shared" in ptx, (
+        f"L-01 LANDMINE [{label}]: Expected ld.shared or st.shared in PTX "
+        f"but found neither. First 200 chars:\n{ptx[:200]}"
+    )
