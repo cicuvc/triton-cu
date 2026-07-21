@@ -51,8 +51,8 @@ Allow `gl.call()` to accept shared-memory descriptors.
 
 ### Verification
 
-- [ ] **SHTEST-01**: New E2E GPU test in `test_extern_call.py` — a Gluon kernel allocates shared memory, passes the descriptor to a CUDA device fn that reads **and writes** it (with explicit `gl.barrier()` synchronization), and GPU output is verified on the RTX 5090
-- [ ] **SHTEST-02**: Swizzle-correctness test — a non-trivial swizzled shared layout round-trips: values written through `SharedTensor&` at specific logical indices read back bit-for-bit correctly via `shared_memory_descriptor.load()`, exercising offset/block bases independently
+- [x] **SHTEST-01**: New E2E GPU test in `test_extern_call.py` — a Gluon kernel allocates shared memory, passes the descriptor to a CUDA device fn that reads **and writes** it (with explicit `gl.barrier()` synchronization), and GPU output is verified on the RTX 5090
+- [x] **SHTEST-02**: Swizzle-correctness test — a non-trivial swizzled shared layout round-trips: values written through `SharedTensor&` at specific logical indices read back bit-for-bit correctly via `shared_memory_descriptor.load()`, exercising offset/block bases independently
 - [ ] **SHTEST-03**: All 6 existing extern-call tests pass unchanged (no regression) and the Gluon lit suite is unaffected
 
 ## v2 / Future Requirements
@@ -98,8 +98,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SHLOWER-01 | Phase 6 | Complete |
 | SHLOWER-02 | Phase 6 | Complete |
 | SHAPI-01 | Phase 6 | Complete |
-| SHTEST-01 | Phase 7 | Pending |
-| SHTEST-02 | Phase 7 | Pending |
+| SHTEST-01 | Phase 7 | Complete |
+| SHTEST-02 | Phase 7 | Complete |
 | SHTEST-03 | Phase 7 | Pending |
 
 **Coverage:**
