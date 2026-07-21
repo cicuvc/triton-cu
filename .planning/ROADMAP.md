@@ -183,7 +183,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 07-02-PLAN.md — E2E GPU tests: SHTEST-01 (read_write + mixed_args), SHTEST-02 (parametrized swizzle), SHTEST-03 (full regression)
+- [x] 07-02-PLAN.md — E2E GPU tests: SHTEST-01 (read_write + mixed_args), SHTEST-02 (parametrized swizzle), SHTEST-03 (full regression)
 
 **UI hint**: no
 
