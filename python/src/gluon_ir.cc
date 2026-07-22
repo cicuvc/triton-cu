@@ -616,11 +616,55 @@ void init_gluon_ir(py::module &&m) {
             [](GluonOpBuilder &self, const std::string &libpath,
                const std::string &symbol, std::vector<Value> &args,
                std::vector<Type> &resultTypes,
-               bool assert_no_conv, bool use_fast_math) -> std::vector<Value> {
+               bool assert_no_conv, bool use_fast_math,
+               std::vector<int32_t> argKinds,
+               std::vector<std::string> scalarTypeNames,
+               pybind11::list scalarVals) -> std::vector<Value> {
+              auto *ctx = self.getBuilder().getContext();
+              auto &builder = self.getBuilder();
+
               auto op = self.create<ttg::ExternCallOp>(
                   resultTypes, args, symbol, libpath, assert_no_conv,
-                  use_fast_math);
-              return {op->result_begin(), op->result_end()};
+                  use_fast_math,
+                  /*scalar_arg_kinds=*/DenseI32ArrayAttr(),
+                  /*scalar_types=*/ArrayAttr(),
+                  /*scalar_values=*/ArrayAttr());
+
+              if (!argKinds.empty())
+                op->setAttr("scalar_arg_kinds",
+                            builder.getDenseI32ArrayAttr(argKinds));
+
+              SmallVector<Attribute> typeAttrs;
+              SmallVector<Attribute> valAttrs;
+              for (size_t i = 0; i < scalarTypeNames.size(); ++i) {
+                auto &name = scalarTypeNames[i];
+                Type ty;
+                if (name == "f32") ty = builder.getF32Type();
+                else if (name == "i32") ty = builder.getI32Type();
+                else if (name == "i64") ty = builder.getI64Type();
+                else if (name == "i1") ty = builder.getI1Type();
+                else ty = builder.getF32Type();
+                typeAttrs.push_back(TypeAttr::get(ty));
+
+                auto pyVal = scalarVals[i];
+                if (pybind11::isinstance<pybind11::float_>(pyVal) ||
+                    pybind11::isinstance<pybind11::int_>(pyVal)) {
+                  float fv = pybind11::cast<float>(pyVal);
+                  valAttrs.push_back(builder.getF32FloatAttr(fv));
+                } else if (pybind11::isinstance<pybind11::bool_>(pyVal)) {
+                  bool bv = pybind11::cast<bool>(pyVal);
+                  valAttrs.push_back(builder.getBoolAttr(bv));
+                } else {
+                  valAttrs.push_back(builder.getF32FloatAttr(0.0f));
+                }
+              }
+              if (!typeAttrs.empty()) {
+                op->setAttr("scalar_types", builder.getArrayAttr(typeAttrs));
+                op->setAttr("scalar_values", builder.getArrayAttr(valAttrs));
+              }
+
+              return std::vector<Value>(op->result_begin(),
+                                       op->result_end());
             })
       .def("create_local_alloc",
            [](GluonOpBuilder &self, Type resultTy) -> Value {

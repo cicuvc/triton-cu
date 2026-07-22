@@ -812,6 +812,8 @@ class CUDABackend(BaseBackend):
                             stp.alignment = inp.get("alignment", 16)
                             stp.layout_rank = len(inp["shape"])
                             param_types.append(stp)
+                        elif inp.get("scalar") is not None:
+                            param_types.append(_scalar_type_for(inp["scalar"]))
                         else:
                             tp = llvm.TensorParameter()
                             tp.type = _scalar_type_for(inp["dtype"])

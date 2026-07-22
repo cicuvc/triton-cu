@@ -1452,11 +1452,15 @@ struct SharedSpecInput {
   int32_t alignment;
 };
 
+struct ScalarSpecInput {
+  std::string dtype;
+};
+
 struct ExternCallSpec {
   std::string symbol;
   std::string libpath;
   bool useFastMath = false;
-  llvm::SmallVector<std::variant<TensorSpecInput, SharedSpecInput>, 4> inputs;
+  llvm::SmallVector<std::variant<TensorSpecInput, SharedSpecInput, ScalarSpecInput>, 6> inputs;
 };
 
 llvm::SmallVector<ExternCallSpec, 4>
@@ -1506,43 +1510,91 @@ extractExternCallSpecs(mlir::ModuleOp module) {
       return flat;
     };
 
-    for (auto operand : op.getInputs()) {
-      auto type = operand.getType();
+    // Read scalar_arg_kinds for interleaving scalar params.
+    auto argKindsAttr = op->getAttrOfType<DenseI32ArrayAttr>("scalar_arg_kinds");
+    auto scalarTypesAttr = op->getAttrOfType<ArrayAttr>("scalar_types");
+    unsigned tensorIdx = 0, scalarIdx = 0;
 
-      if (auto tensorTy = dyn_cast<RankedTensorType>(type)) {
-        auto shape = tensorTy.getShape();
-        auto encoding = tensorTy.getEncoding();
-        auto ll =
-            mlir::triton::gpu::toLinearLayout(shape, encoding);
+    // Use arg_kinds if present; otherwise fall back to iterating inputs directly.
+    if (argKindsAttr && !argKindsAttr.empty()) {
+      for (int32_t kind : argKindsAttr.asArrayRef()) {
+        if (kind == 0) {
+          auto operand = op.getInputs()[tensorIdx++];
+          auto type = operand.getType();
 
-        TensorSpecInput input;
-        input.shape.assign(shape.begin(), shape.end());
-        input.numWarps = ll.getInDimSize(kWarp);
-        input.regBases =
-            flattenBases(ll.getBases().lookup(kRegister));
-        input.laneBases =
-            flattenBases(ll.getBases().lookup(kLane));
-        input.warpBases =
-            flattenBases(ll.getBases().lookup(kWarp));
-        input.dtype = mapDtype(tensorTy.getElementType());
-        spec.inputs.push_back(std::move(input));
+          if (auto tensorTy = dyn_cast<RankedTensorType>(type)) {
+            auto shape = tensorTy.getShape();
+            auto encoding = tensorTy.getEncoding();
+            auto ll = mlir::triton::gpu::toLinearLayout(shape, encoding);
+            TensorSpecInput input;
+            input.shape.assign(shape.begin(), shape.end());
+            input.numWarps = ll.getInDimSize(kWarp);
+            input.regBases = flattenBases(ll.getBases().lookup(kRegister));
+            input.laneBases = flattenBases(ll.getBases().lookup(kLane));
+            input.warpBases = flattenBases(ll.getBases().lookup(kWarp));
+            input.dtype = mapDtype(tensorTy.getElementType());
+            spec.inputs.push_back(std::move(input));
+          } else if (auto memDescTy = dyn_cast<mlir::triton::gpu::MemDescType>(type)) {
+            auto shape = memDescTy.getShape();
+            auto encoding = memDescTy.getEncoding();
+            auto ll = mlir::triton::gpu::toLinearLayout(memDescTy);
+            SharedSpecInput input;
+            input.shape.assign(shape.begin(), shape.end());
+            input.memorySpace = "shared";
+            input.offsetBases = flattenBases(ll.getBases().lookup(kOffset));
+            input.blockBases = flattenBases(ll.getBases().lookup(kBlock));
+            auto sharedEnc = cast<mlir::triton::gpu::SharedEncodingTrait>(encoding);
+            input.alignment = sharedEnc.getAlignment();
+            input.dtype = mapDtype(memDescTy.getElementType());
+            spec.inputs.push_back(std::move(input));
+          }
+        } else {
+          auto tyAttr = cast<TypeAttr>(scalarTypesAttr[scalarIdx++]);
+          Type scalarTy = tyAttr.getValue();
+          ScalarSpecInput si;
+          si.dtype = mapDtype(scalarTy);
+          spec.inputs.push_back(std::move(si));
+        }
+      }
+    } else {
+      for (auto operand : op.getInputs()) {
+        auto type = operand.getType();
 
-      } else if (auto memDescTy = dyn_cast<mlir::triton::gpu::MemDescType>(type)) {
-        auto shape = memDescTy.getShape();
-        auto encoding = memDescTy.getEncoding();
-        auto ll = mlir::triton::gpu::toLinearLayout(memDescTy);
+        if (auto tensorTy = dyn_cast<RankedTensorType>(type)) {
+          auto shape = tensorTy.getShape();
+          auto encoding = tensorTy.getEncoding();
+          auto ll =
+              mlir::triton::gpu::toLinearLayout(shape, encoding);
 
-        SharedSpecInput input;
-        input.shape.assign(shape.begin(), shape.end());
-        input.memorySpace = "shared";
-        input.offsetBases =
-            flattenBases(ll.getBases().lookup(kOffset));
-        input.blockBases =
-            flattenBases(ll.getBases().lookup(kBlock));
-        auto sharedEnc = cast<mlir::triton::gpu::SharedEncodingTrait>(encoding);
-        input.alignment = sharedEnc.getAlignment();
-        input.dtype = mapDtype(memDescTy.getElementType());
-        spec.inputs.push_back(std::move(input));
+          TensorSpecInput input;
+          input.shape.assign(shape.begin(), shape.end());
+          input.numWarps = ll.getInDimSize(kWarp);
+          input.regBases =
+              flattenBases(ll.getBases().lookup(kRegister));
+          input.laneBases =
+              flattenBases(ll.getBases().lookup(kLane));
+          input.warpBases =
+              flattenBases(ll.getBases().lookup(kWarp));
+          input.dtype = mapDtype(tensorTy.getElementType());
+          spec.inputs.push_back(std::move(input));
+
+        } else if (auto memDescTy = dyn_cast<mlir::triton::gpu::MemDescType>(type)) {
+          auto shape = memDescTy.getShape();
+          auto encoding = memDescTy.getEncoding();
+          auto ll = mlir::triton::gpu::toLinearLayout(memDescTy);
+
+          SharedSpecInput input;
+          input.shape.assign(shape.begin(), shape.end());
+          input.memorySpace = "shared";
+          input.offsetBases =
+              flattenBases(ll.getBases().lookup(kOffset));
+          input.blockBases =
+              flattenBases(ll.getBases().lookup(kBlock));
+          auto sharedEnc = cast<mlir::triton::gpu::SharedEncodingTrait>(encoding);
+          input.alignment = sharedEnc.getAlignment();
+          input.dtype = mapDtype(memDescTy.getElementType());
+          spec.inputs.push_back(std::move(input));
+        }
       }
     }
     results.push_back(std::move(spec));
@@ -1581,52 +1633,48 @@ tritonExtractExternCallSpecs(mlir::ModuleOp module) {
       firstInput = false;
 
       std::visit([&](auto &input) {
-        // common fields (dtype, shape) — same for both variants
+        using T = std::decay_t<decltype(input)>;
         os << "{";
-        os << "\"dtype\": \"" << input.dtype << "\", ";
-        os << "\"shape\": [";
-        for (size_t i = 0; i < input.shape.size(); ++i) {
-          if (i > 0)
-            os << ", ";
-          os << input.shape[i];
-        }
-        os << "]";
-
-        if constexpr (std::is_same_v<std::decay_t<decltype(input)>, TensorSpecInput>) {
-          // Tensor variant: emit distributed-layout fields
-          os << ", \"num_warps\": " << input.numWarps;
-          auto flatten = [&](auto &bases) {
-            os << "[";
-            for (size_t i = 0; i < bases.size(); ++i) {
-              if (i > 0)
-                os << ", ";
-              os << bases[i];
-            }
-            os << "]";
-          };
-          os << ", \"reg_bases\": ";
-          flatten(input.regBases);
-          os << ", \"lane_bases\": ";
-          flatten(input.laneBases);
-          os << ", \"warp_bases\": ";
-          flatten(input.warpBases);
+        if constexpr (std::is_same_v<T, ScalarSpecInput>) {
+          os << "\"dtype\": \"" << input.dtype << "\", ";
+          os << "\"scalar\": \"" << input.dtype << "\"";
         } else {
-          // Shared variant: emit shared-memory layout fields
-          os << ", \"memory_space\": \"" << input.memorySpace << "\"";
-          auto flatten = [&](auto &bases) {
-            os << "[";
-            for (size_t i = 0; i < bases.size(); ++i) {
-              if (i > 0)
-                os << ", ";
-              os << bases[i];
-            }
-            os << "]";
-          };
-          os << ", \"offset_bases\": ";
-          flatten(input.offsetBases);
-          os << ", \"block_bases\": ";
-          flatten(input.blockBases);
-          os << ", \"alignment\": " << input.alignment;
+          // common fields for Tensor and Shared
+          os << "\"dtype\": \"" << input.dtype << "\", ";
+          os << "\"shape\": [";
+          for (size_t i = 0; i < input.shape.size(); ++i) {
+            if (i > 0) os << ", ";
+            os << input.shape[i];
+          }
+          os << "]";
+
+          if constexpr (std::is_same_v<T, TensorSpecInput>) {
+            os << ", \"num_warps\": " << input.numWarps;
+            auto flatten = [&](auto &bases) {
+              os << "[";
+              for (size_t i = 0; i < bases.size(); ++i) {
+                if (i > 0) os << ", ";
+                os << bases[i];
+              }
+              os << "]";
+            };
+            os << ", \"reg_bases\": "; flatten(input.regBases);
+            os << ", \"lane_bases\": "; flatten(input.laneBases);
+            os << ", \"warp_bases\": "; flatten(input.warpBases);
+          } else {
+            os << ", \"memory_space\": \"" << input.memorySpace << "\"";
+            auto flatten = [&](auto &bases) {
+              os << "[";
+              for (size_t i = 0; i < bases.size(); ++i) {
+                if (i > 0) os << ", ";
+                os << bases[i];
+              }
+              os << "]";
+            };
+            os << ", \"offset_bases\": "; flatten(input.offsetBases);
+            os << ", \"block_bases\": "; flatten(input.blockBases);
+            os << ", \"alignment\": " << input.alignment;
+          }
         }
         os << "}";
       }, inputV);
@@ -1811,7 +1859,10 @@ std::string tritonPatchExternCallResultTypes(
     ImplicitLocOpBuilder ib(op.getLoc(), builder);
     auto newOp = triton::gpu::ExternCallOp::create(
         ib, newResultTypes, op.getInputs(),
-        op.getSymbol(), op.getLibpath(), op.getAssertNoConv());
+        op.getSymbol(), op.getLibpath(), op.getAssertNoConv(),
+        op.getUseFastMath(),
+        /*scalar_arg_kinds=*/nullptr, /*scalar_types=*/nullptr,
+        /*scalar_values=*/nullptr);
 
     for (unsigned i = 0; i < numResults; i++) {
       auto declaredType =

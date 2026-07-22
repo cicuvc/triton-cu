@@ -804,7 +804,10 @@ def TTG_ExternCallOp : TTG_Op<"extern_call", [
     StrAttr:$symbol,
     StrAttr:$libpath,
     UnitAttr:$assert_no_conv,
-    UnitAttr:$use_fast_math
+    UnitAttr:$use_fast_math,
+    OptionalAttr<DenseI32ArrayAttr>:$scalar_arg_kinds,
+    OptionalAttr<ArrayAttr>:$scalar_types,
+    OptionalAttr<ArrayAttr>:$scalar_values
   );
   let results = (outs Variadic<TT_Tensor>:$results);
 

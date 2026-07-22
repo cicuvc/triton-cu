@@ -247,14 +247,19 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             layout = AutoLayout()
         return self.splat(scalar, shape, layout)
 
-    def call_extern(self, src_path, func, args, result_layouts, assert_no_conv=False, use_fast_math=False):
+    def call_extern(self, src_path, func, args, result_layouts, assert_no_conv=False, use_fast_math=False,
+                    scalar_args=None, arg_kinds=None):
         _check(isinstance(src_path, str), lambda: f"expected 'src_path' to be a str but got {type(src_path)!r}")
         _check(isinstance(func, str), lambda: f"expected 'func' to be a str but got {type(func)!r}")
         for a in args:
             _check(isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor)),
                    lambda: f"all arguments must be tensors or shared_memory_descriptors but got {type(a)!r}")
         _check(isinstance(result_layouts, list),
-               lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
+                lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
+        if scalar_args is None:
+            scalar_args = []
+        if arg_kinds is None:
+            arg_kinds = [0] * len(args)
 
         # Backend-agnostic f64 guard — raise before building IR.
         _f64_err = "gl.call() does not support float64; full Fp64 support is out of scope (see FP64-01)"
@@ -272,32 +277,40 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                 if isinstance(a.type.layout, _glayouts.PaddedSharedLayout):
                     raise NotImplementedError(_psl_err)
 
-        # Phase 2: Use CUDA-inferred dtype+shape for result type construction.
-        # The inference hook was registered by the CUDA backend via codegen_fns.
+        # Build inference arg_params in C++ arg order (interleave tensor+scalar).
         infer_hook = self.builder.codegen_fns.get("infer_extern_call_result")
         inferred_results = None
         if infer_hook is not None:
             arg_params = []
-            for a in args:
-                if isinstance(a, ttgl.shared_memory_descriptor):
-                    arg_params.append({
-                        "dtype": str(a.dtype),
-                        "shape": list(a.shape),
-                        "layout": a.type.layout,
-                        "memory_space": "shared",
-                    })
-                elif hasattr(a.type, 'layout'):
-                    arg_params.append({
-                        "dtype": str(a.dtype),
-                        "shape": list(a.shape),
-                        "layout": a.type.layout,
-                    })
+            tensor_idx = 0
+            scalar_idx = 0
+            for kind in arg_kinds:
+                if kind == 0:
+                    a = args[tensor_idx]
+                    tensor_idx += 1
+                    if isinstance(a, ttgl.shared_memory_descriptor):
+                        arg_params.append({
+                            "dtype": str(a.dtype),
+                            "shape": list(a.shape),
+                            "layout": a.type.layout,
+                            "memory_space": "shared",
+                        })
+                    else:
+                        arg_params.append({
+                            "dtype": str(a.dtype),
+                            "shape": list(a.shape),
+                            "layout": a.type.layout,
+                        })
                 else:
-                    # Scalar / constexpr arg — pass as scalar-only for template deduction
-                    arg_params.append({
-                        "dtype": str(a.dtype),
-                        "scalar": str(a.dtype),
-                    })
+                    val = scalar_args[scalar_idx]
+                    scalar_idx += 1
+                    if isinstance(val, bool):
+                        dtype = "i1"
+                    elif isinstance(val, int):
+                        dtype = "i32"
+                    else:
+                        dtype = "f32"
+                    arg_params.append({"dtype": dtype, "scalar": dtype})
             inferred_results = infer_hook.infer_result(
                 str(src_path), func, arg_params, use_fast_math)
         else:
@@ -335,9 +348,22 @@ class GluonSemantic(TritonSemantic[TensorTy]):
 
         result_ir_types = [rt.to_ir(self.builder) for rt in result_types]
         arg_handles = [a.handle for a in args]
+
+        scalar_type_names = []
+        scalar_values = []
+        for v in scalar_args:
+            if isinstance(v, bool):
+                scalar_type_names.append("i1")
+            elif isinstance(v, int):
+                scalar_type_names.append("i32")
+            else:
+                scalar_type_names.append("f32")
+            scalar_values.append(v)
+
         result_handles = self.builder.create_extern_call(
             str(src_path), func, arg_handles, result_ir_types,
-            assert_no_conv, use_fast_math)
+            assert_no_conv, use_fast_math,
+            arg_kinds, scalar_type_names, scalar_values)
 
         results = [ttgl.tensor(h, rt) for h, rt in zip(result_handles, result_types)]
         return results[0] if len(results) == 1 else tuple(results)

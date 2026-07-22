@@ -175,7 +175,6 @@ struct ExternCallOpConversion
     std::vector<std::string> argSpaces;
     (void)getArgMemorySpaces(module, op.getSymbol().str(), argSpaces);
     if (argSpaces.empty()) {
-      // Fallback for pre-Phase-6 modules: all operands are register.
       argSpaces.assign(numTensorArgs, "register");
     }
 
@@ -207,9 +206,43 @@ struct ExternCallOpConversion
       }
     }
 
-    SmallVector<Type> promotedTypes;
-    for (auto v : promotedOperands)
-      promotedTypes.push_back(v.getType());
+    // Build callee argument list, interleaving scalar constants from op attrs.
+    SmallVector<Value> calleeArgs;
+    SmallVector<Type> calleeTypes;
+    auto argKindsAttr = op->getAttrOfType<DenseI32ArrayAttr>("scalar_arg_kinds");
+    if (argKindsAttr && !argKindsAttr.empty()) {
+      auto scalarTypesAttr = op->getAttrOfType<ArrayAttr>("scalar_types");
+      auto scalarValsAttr = op->getAttrOfType<ArrayAttr>("scalar_values");
+      auto argKinds = argKindsAttr.asArrayRef();
+      unsigned tensorIdx = 0, scalarIdx = 0;
+      for (int32_t kind : argKinds) {
+        if (kind == 0) {
+          assert(tensorIdx < promotedOperands.size());
+          calleeArgs.push_back(promotedOperands[tensorIdx]);
+          calleeTypes.push_back(promotedOperands[tensorIdx].getType());
+          ++tensorIdx;
+        } else {
+          auto tyAttr = cast<TypeAttr>(scalarTypesAttr[scalarIdx]);
+          auto valAttr = scalarValsAttr[scalarIdx];
+          Type scalarTy = tyAttr.getValue();
+          Value constant;
+          if (auto fAttr = dyn_cast<FloatAttr>(valAttr)) {
+            constant = b.f32_val(fAttr.getValueAsDouble());
+          } else if (auto iAttr = dyn_cast<IntegerAttr>(valAttr)) {
+            constant = b.i32_val(iAttr.getInt());
+          } else {
+            constant = b.f32_val(0.0f);
+          }
+          calleeArgs.push_back(constant);
+          calleeTypes.push_back(scalarTy);
+          ++scalarIdx;
+        }
+      }
+    } else {
+      calleeArgs.assign(promotedOperands.begin(), promotedOperands.end());
+      for (auto v : promotedOperands)
+        calleeTypes.push_back(v.getType());
+    }
 
     unsigned numResults = op.getNumResults();
     Type packedResult = nullptr;
@@ -243,7 +276,7 @@ struct ExternCallOpConversion
       // Build main call: void @fn(ptr sret, ptr arg0, ptr arg1, ...)
       SmallVector<Type> mainArgTypes;
       mainArgTypes.push_back(ptrTy);
-      mainArgTypes.append(promotedTypes.begin(), promotedTypes.end());
+      mainArgTypes.append(calleeTypes.begin(), calleeTypes.end());
       auto mainFuncType = LLVM::LLVMFunctionType::get(
           LLVM::LLVMVoidType::get(ctx), mainArgTypes);
 
@@ -252,7 +285,7 @@ struct ExternCallOpConversion
 
       SmallVector<Value> mainArgs;
       mainArgs.push_back(mainRET.getResult());
-      mainArgs.append(promotedOperands.begin(), promotedOperands.end());
+      mainArgs.append(calleeArgs.begin(), calleeArgs.end());
 
       auto mainCall = LLVM::CallOp::create(rewriter, loc, mainFuncOp, mainArgs);
       mainCall.getProperties().setOpBundleSizes(
@@ -302,16 +335,16 @@ struct ExternCallOpConversion
     }
 
     auto funcType =
-        LLVM::LLVMFunctionType::get(clangReturnType, promotedTypes);
+        LLVM::LLVMFunctionType::get(clangReturnType, calleeTypes);
 
     auto funcOp = appendOrGetExternFuncOp(rewriter, op, mangledName, funcType,
                                           "", op.getLibpath());
 
-    auto callOp = LLVM::CallOp::create(rewriter, loc, funcOp, promotedOperands);
+    auto callOp = LLVM::CallOp::create(rewriter, loc, funcOp, calleeArgs);
     callOp.getProperties().setOpBundleSizes(
         rewriter.getDenseI32ArrayAttr({}));
     callOp.getProperties().setOperandSegmentSizes(
-        {static_cast<int>(promotedOperands.size()), 0});
+        {static_cast<int>(calleeArgs.size()), 0});
 
     SmallVector<Value> results;
     if (numResults != 0) {

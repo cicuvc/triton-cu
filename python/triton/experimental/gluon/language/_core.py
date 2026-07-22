@@ -801,16 +801,25 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
         raise FileNotFoundError(f"extern call source not found: {src_path}")
 
     tensors = []
+    scalar_args = []
+    arg_kinds = []
     for a in args:
-        if isinstance(a, (tensor, shared_memory_descriptor)):
+        if isinstance(a, constexpr):
+            scalar_args.append(a.value)
+            arg_kinds.append(1)
+        elif isinstance(a, (tensor, shared_memory_descriptor)):
             tensors.append(a)
+            arg_kinds.append(0)
         else:
             tensors.append(_semantic.to_tensor(a))
+            arg_kinds.append(0)
     if isinstance(result_layout, (list, tuple)):
         result_layouts = [_unwrap_if_constexpr(lo) for lo in result_layout]
     else:
         result_layouts = [_unwrap_if_constexpr(result_layout)]
     return _semantic.call_extern(str(src_path), func, tensors,
-                                 result_layouts=result_layouts,
-                                 assert_no_conv=assert_no_conv,
-                                 use_fast_math=use_fast_math)
+                                  result_layouts=result_layouts,
+                                  assert_no_conv=assert_no_conv,
+                                  use_fast_math=use_fast_math,
+                                  scalar_args=scalar_args,
+                                  arg_kinds=arg_kinds)
