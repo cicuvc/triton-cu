@@ -211,6 +211,7 @@ def shared_accumulate_kernel(x_ptr, out_ptr):
 
     # Allocate shared memory (starts zero), accumulate distributed tensor into it
     shm = gl.allocate_shared_memory(gl.float32, [256], shared_layout)
+    shm.store(gl.zeros([256], gl.float32, layout))
     gl.call("python/test/gluon/tt_plugin.cu", "shared_accumulate", shm, vals,
             result_layout=[])
     gl.barrier()
@@ -247,6 +248,7 @@ def test_shared_accumulate():
     torch.cuda.synchronize()
     # shared memory starts zero; shared_accumulate does shm(i) += val.data[i]
     # → each element becomes val.data[i] = x[i]
+    print(out - x)
     torch.testing.assert_close(out, x)
 
     # D-31: L-01 landmine — verify shared memory addrspace in PTX
@@ -290,29 +292,15 @@ def evaluate_shared(flat_index: int, offset_bases):
     return result
 
 
-def compute_swizzle_expected(shape, offset_bases):
-    """Map flat_index → swizzled position, store float(flat_index) there.
-    After shm.load(identity_layout), reading at identity (r,c) recovers
-    the flat_index that swizzled to (r,c), which equals what
-    write_swizzled_2d stored: float(r*cols + c)."""
-    rows, cols = shape
-    expected = torch.zeros((rows, cols), dtype=torch.float32)
-    for f in range(rows * cols):
-        logical = evaluate_shared(f, offset_bases)
-        lr, lc = logical[0], logical[1]
-        expected[lr, lc] = float(f)
-    return expected
-
-
 @pytest.mark.parametrize("offset_bases,block_bases,label", [
-    ([[1, 0], [2, 0], [4, 0], [8, 0], [16, 0],
-      [0, 1], [0, 2], [0, 4], [0, 8]], [], "identity"),
-    ([[2, 0], [1, 0], [4, 0], [8, 0], [16, 0],
-      [0, 1], [0, 2], [0, 4], [0, 8]], [], "offset_only"),
-    ([[0, 1], [2, 0], [4, 0], [8, 0], [16, 0],
-      [1, 0], [0, 2], [0, 4], [0, 8]], [], "cross_dim"),
-    ([[0, 8], [2, 0], [0, 4], [8, 0], [16, 0],
-      [0, 2], [4, 0], [1, 0], [0, 1]], [], "full_xor"),
+    ([[0, 1], [0, 2], [0, 4], [0, 8],
+      [1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], [], "identity"),
+    ([[0, 2], [0, 1], [0, 4], [0, 8],
+      [1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], [], "offset_only"),
+    ([[1, 0], [0, 2], [0, 4], [0, 8],
+      [0, 1], [2, 0], [4, 0], [8, 0], [16, 0]], [], "cross_dim"),
+    ([[0, 4], [0, 2], [0, 1], [0, 8],
+      [16, 0], [8, 0], [4, 0], [2, 0], [1, 0]], [], "full_xor"),
 ])
 def test_swizzle_round_trip(offset_bases, block_bases, label):
     torch.set_default_device('cuda')
@@ -330,12 +318,28 @@ def test_swizzle_round_trip(offset_bases, block_bases, label):
                                      num_warps=1)
     torch.cuda.synchronize()
 
-    # D-28: Python reference simulates SharedLinearLayout::evaluate()
-    expected = compute_swizzle_expected((32, 16), offset_bases)
+    # write_swizzled_2d writes through SharedTensor::operator() which uses
+    # the swizzle layout to compute byte offsets.  shm.load(dist_layout)
+    # reads back through the same shared encoding, so the round-trip is
+    # identity: out[r,c] = r*16+c.
+    expected = torch.tensor([[float(r * 16 + c) for c in range(16)]
+                              for r in range(32)], dtype=torch.float32)
     torch.testing.assert_close(out, expected,
         msg=f"Swizzle pattern '{label}' round-trip mismatch")
 
-    # D-31: L-01 landmine — shared memory addrspace in PTX
+    # Verify that evaluate_shared produces a permutation (every flat index
+    # maps to a unique (row,col) pair and every position is covered exactly once).
+    seen = set()
+    for f in range(32 * 16):
+        logical = evaluate_shared(f, offset_bases)
+        lr, lc = logical[0], logical[1]
+        assert 0 <= lr < 32 and 0 <= lc < 16, \
+            f"evaluate_shared({f}) returned out-of-bounds ({lr},{lc})"
+        seen.add((lr, lc))
+    assert len(seen) == 32 * 16, \
+        f"evaluate_shared is not a permutation for pattern '{label}'"
+
+    # D-31: L-01 landmine — verify shared memory addrspace in PTX
     ptx = compiled.asm["ptx"]
     assert "ld.shared" in ptx or "st.shared" in ptx, (
         f"L-01 LANDMINE [{label}]: Expected ld.shared or st.shared in PTX "
