@@ -176,8 +176,8 @@ def test_gl_call_no_inference_hook_raises():
 @gluon.jit
 def shared_read_write_kernel(x_ptr, out_ptr, SCALE: gl.constexpr):
     shared_layout: gl.constexpr = gl.SharedLinearLayout(
-        offset_bases=[[1, 0], [2, 0], [4, 0], [8, 0],
-                       [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]],
+        offset_bases=[[1, 0], [2, 0], [4, 0], [8, 0], [16, 0],
+                       [0, 1], [0, 2], [0, 4], [0, 8]],
         block_bases=[], alignment=16)
     dist_layout: gl.constexpr = gl.BlockedLayout([1, 1], [16, 2], [1, 1], [1, 0])
 
@@ -305,14 +305,14 @@ def compute_swizzle_expected(shape, offset_bases):
 
 
 @pytest.mark.parametrize("offset_bases,block_bases,label", [
-    ([[1, 0], [2, 0], [4, 0], [8, 0],
-      [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], [], "identity"),
-    ([[2, 0], [1, 0], [4, 0], [8, 0],
-      [0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], [], "offset_only"),
-    ([[0, 1], [2, 0], [4, 0], [8, 0],
-      [1, 0], [0, 2], [0, 4], [0, 8], [0, 16]], [], "cross_dim"),
-    ([[0, 16], [2, 0], [0, 8], [8, 0],
-      [0, 4], [4, 0], [0, 2], [1, 0], [0, 1]], [], "full_xor"),
+    ([[1, 0], [2, 0], [4, 0], [8, 0], [16, 0],
+      [0, 1], [0, 2], [0, 4], [0, 8]], [], "identity"),
+    ([[2, 0], [1, 0], [4, 0], [8, 0], [16, 0],
+      [0, 1], [0, 2], [0, 4], [0, 8]], [], "offset_only"),
+    ([[0, 1], [2, 0], [4, 0], [8, 0], [16, 0],
+      [1, 0], [0, 2], [0, 4], [0, 8]], [], "cross_dim"),
+    ([[0, 8], [2, 0], [0, 4], [8, 0], [16, 0],
+      [0, 2], [4, 0], [1, 0], [0, 1]], [], "full_xor"),
 ])
 def test_swizzle_round_trip(offset_bases, block_bases, label):
     torch.set_default_device('cuda')

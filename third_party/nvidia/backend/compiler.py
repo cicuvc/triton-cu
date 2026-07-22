@@ -281,6 +281,9 @@ class InferExternCallResult:
                 stp.alignment = 16          # default alignment
                 stp.layout_rank = len(ap["shape"])
                 param_types.append(stp)
+            elif ap.get("scalar") is not None:
+                # Scalar arg — pass as ScalarType for plain T params (e.g. T scale)
+                param_types.append(_scalar_type_for(ap["scalar"]))
             else:
                 tp = llvm.TensorParameter()
                 tp.type = _scalar_type_for(ap["dtype"])
@@ -328,8 +331,7 @@ class InferExternCallResult:
                 inferred.append((scalar_name, list(tp.shape)))
 
         if len(inferred) == 0:
-            raise RuntimeError(
-                f"infer_result: no return types inferred for '{func}'")
+            return []  # void-returning functions produce no results
         return inferred
 
     def compile_bitcode(self, libpath, requests):

@@ -286,11 +286,17 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                         "layout": a.type.layout,
                         "memory_space": "shared",
                     })
-                else:
+                elif hasattr(a.type, 'layout'):
                     arg_params.append({
                         "dtype": str(a.dtype),
                         "shape": list(a.shape),
                         "layout": a.type.layout,
+                    })
+                else:
+                    # Scalar / constexpr arg — pass as scalar-only for template deduction
+                    arg_params.append({
+                        "dtype": str(a.dtype),
+                        "scalar": str(a.dtype),
                     })
             inferred_results = infer_hook.infer_result(
                 str(src_path), func, arg_params, use_fast_math)
