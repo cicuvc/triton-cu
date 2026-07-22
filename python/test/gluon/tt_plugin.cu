@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <bit>
 #include <initializer_list>
 #include <utility>
 #include <algorithm>
@@ -15,9 +16,9 @@ struct Shape{
 template<uint32_t N>
 struct IntTuple{
     uint32_t Dims[N];
-    constexpr IntTuple(): Dims{0}{}
+    __forceinline__ constexpr IntTuple(): Dims{0}{}
     template<typename... Ts>
-    constexpr IntTuple(Ts&&... vals): Dims{static_cast<uint32_t>(vals)...}{}
+    __forceinline__ constexpr IntTuple(Ts&&... vals): Dims{static_cast<uint32_t>(vals)...}{}
 
     constexpr IntTuple<N> operator+(const IntTuple<N>& rhs) const {
         return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ return IntTuple<N>{ (Dims[IDX]^rhs.Dims[IDX])... }; })(std::make_index_sequence<N>{});
@@ -166,29 +167,54 @@ struct SharedLinearLayout {
     }
 };
 
+template<typename T>
+struct shared_accessor{
+    uint32_t __shared_memory_base;
+
+    __forceinline__ __device__ T load() const {
+        if constexpr(sizeof(T) == 4){
+            uint32_t data;
+            asm volatile("ld.shared.b32 %0, [%1];\n":"=r"(data):"r"(__shared_memory_base):"memory");
+            return std::bit_cast<T>(data);
+        } else {
+            return T{}; // not implemented
+        }
+    }
+
+    __forceinline__ __device__ void store(const T& data) {
+        if constexpr(sizeof(T) == 4){
+            uint32_t data_u32 = std::bit_cast<uint32_t>(data);
+            asm volatile("st.shared.b32 [%1], %0;\n"::"r"(data_u32),"r"(__shared_memory_base):"memory");
+        }
+    }
+
+    __device__ __forceinline__ operator T() const { return load(); }
+    __device__ __forceinline__ T operator =(const T& value) { store(value); return value; }
+};
+
 // SharedTensor: aliases external shared memory (D-03).
 // T data[] is a zero-length array — lowers to ptr addrspace(3) in Phase 6.
 // operator() takes logical indices, flattens via Shape strides, evaluates
 // SharedLinearLayout to get byte offset, and returns T& (read+write, D-04).
 template<typename T, typename TShape, typename TLayout>
 struct SharedTensor {
-    void* __shared_memory_base;  // sentinel: satisfies C++ struct-inhabitant rule
+    uint32_t __shared_memory_base;  // sentinel: satisfies C++ struct-inhabitant rule
                                  // for flexible array members (required by nvcc).
                                  // This struct is never allocated — it solely
                                  // aliases external shared memory through data[].
-    T data[];  // zero-length — aliases external shared memory (D-03)
 
     // D-04: variadic operator() accepting RANK logical indices, returning T&.
     // Flattening convention: row-major (outer dim first, inner dim varies fastest).
     // For Shape<D0> (Rank 1): flatIndex = indices[0]
     // For Shape<D0, D1> (Rank 2): flatIndex = indices[0] * D1 + indices[1]
-    __device__ T& operator()(auto... indices) {
+    __device__ __forceinline__ shared_accessor<T> operator()(auto... indices) {
         static_assert(sizeof...(indices) == TShape::RANK, "number of indices must match tensor rank");
-        constexpr auto dims = ShapeDims<TShape>::All;
+        constexpr auto& dims = ShapeDims<TShape>::All;
         uint32_t idxs[TShape::RANK] = {static_cast<uint32_t>(indices)...};
 
         // Row-major flatten: flatIndex = sum(indices[k] * stride[k])
         uint32_t flatIndex = 0;
+        #pragma unroll
         for (int d = 0; d < TShape::RANK; ++d) {
             uint32_t stride = 1;
             for (int k = d + 1; k < TShape::RANK; ++k)
@@ -200,13 +226,14 @@ struct SharedTensor {
         // Convert logical offset to 1D byte offset: dot(logicalOffset, byteStrides)
         // where byteStrides[k] = product(dims[k+1..N-1]) * sizeof(T)
         uint32_t byteOffset = 0;
+        #pragma unroll
         for (int d = 0; d < TShape::RANK; ++d) {
             uint32_t byteStride = sizeof(T);
             for (int k = d + 1; k < TShape::RANK; ++k)
                 byteStride *= dims[k];
             byteOffset += logicalOffset.Dims[d] * byteStride;
         }
-        return data[byteOffset];
+        return shared_accessor<T>{__shared_memory_base + byteOffset };
     }
 };
 
@@ -229,9 +256,10 @@ __device__ void shared_accumulate(
     SharedTensor<T, Shape<N>, SharedTLayout>& shm,
     const Tensor<T, Shape<N>, TLayout>& val)
 {
+    uint32_t tid = threadIdx.x;
     #pragma unroll TLayout::REG_SIZE
     for (uint32_t i = 0; i < TLayout::REG_SIZE; i++)
-        shm(i) += val.data[i];
+        shm(i * 32 + tid) = shm(i * 32 + tid) + val.data[i]; // users should be fully aware of every reads and writes to shared memory
 }
 
 template<typename T, typename TLayout>

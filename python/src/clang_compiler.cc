@@ -37,6 +37,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
 #include <fstream>
@@ -2052,12 +2053,19 @@ void linkBitcodeToModule(llvm::Module *dstMod,
       dstArgIt->setName(srcArg.getName());
       ++dstArgIt;
     }
+    
+    for(auto &globalIt : tmpMod->globals()){
+      vmap[&globalIt] = dstMod->getOrInsertGlobal(globalIt.getName(), globalIt.getValueType(), [&]()->llvm::GlobalVariable*{
+        auto GV = new llvm::GlobalVariable(globalIt.getValueType(), globalIt.isConstant(), globalIt.getLinkage(), globalIt.getInitializer(), globalIt.getName() + "_alt", globalIt.getThreadLocalMode(), globalIt.getAddressSpace(), globalIt.isExternallyInitialized());
+        dstMod->insertGlobalVariable(GV);
+        return GV;
+      });
+    }
 
     llvm::SmallVector<llvm::ReturnInst *, 8> returns;
     llvm::CloneFunctionInto(
         dstFn, srcFn, vmap,
         llvm::CloneFunctionChangeType::DifferentModule, returns);
-
     for (auto &BB : *dstFn) {
       for (auto &I : BB) {
         auto *call = llvm::dyn_cast<llvm::CallInst>(&I);
@@ -2077,7 +2085,7 @@ void linkBitcodeToModule(llvm::Module *dstMod,
       }
     }
 
-    srcFn->eraseFromParent();
+    //srcFn->eraseFromParent();
 
     for (auto &BB : *dstFn) {
       for (auto RI = BB.begin(); RI != BB.end();) {

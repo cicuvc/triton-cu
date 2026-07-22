@@ -190,8 +190,16 @@ struct ExternCallOpConversion
             memDescType.getElementType());
         auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
             loc, promotedOperands[i], llvmElemTy, rewriter);
-        promotedOperands[i] = smemObj.getShmemAffineBase(
+        
+        auto *builder = &static_cast<OpBuilder &>(rewriter);
+        auto ptrTyAS3U32 = builder->getIntegerType(32);
+        auto smemPtr = smemObj.getShmemAffineBase(
             loc, rewriter, memDescType);
+        Value stackPtr = LLVM::AllocaOp::create(
+            *builder, loc, ptrTy, ptrTyAS3U32, b.i32_val(1), 0).getResult();
+        b.store(b.ptrtoint(ptrTyAS3U32, smemPtr), stackPtr);
+        
+        promotedOperands[i] = stackPtr;
         // Result is ptr addrspace(3) — passes directly to callee.
       } else {
         // Existing distributed path: alloca + store + ptr (AS0).
