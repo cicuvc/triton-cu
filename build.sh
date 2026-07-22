@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-export LLVM_SYSPATH=/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install
+export LLVM_SYSPATH=/mnt/data/llvm-triton/install/
 export TRITON_CACHE_PATH=${TRITON_CACHE_PATH:-$HOME/.triton/cache}
 export TRITON_OFFLINE_BUILD=1
 mkdir -p /tmp/triton_wheel

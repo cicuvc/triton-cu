@@ -442,7 +442,7 @@ class CUDABackend(BaseBackend):
         _cuda_inc = _os.path.join(_os.path.dirname(__file__), "include")
         _sm = f"sm_{capability // 10}{capability % 10}"
         _include_paths = [_cuda_inc,
-                          "/usr/local/cuda-13.1/targets/x86_64-linux/include"]
+                          "/usr/local/cuda-12.8/targets/x86_64-linux/include"]
 
         _infer_hook = InferExternCallResult(_sm, _resource_dir, _include_paths)
         self._infer_hook = _infer_hook  # stored for _pre_compile_extern_calls
@@ -754,7 +754,7 @@ class CUDABackend(BaseBackend):
         cuda_inc = os.path.join(os.path.dirname(__file__), "include")
         sm = f"sm_{capability // 10}{capability % 10}"
         _include_paths = [cuda_inc,
-                          "/usr/local/cuda-13.1/targets/x86_64-linux/include"]
+                          "/usr/local/cuda-12.8/targets/x86_64-linux/include"]
 
         dtype_to_scalar = {
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
