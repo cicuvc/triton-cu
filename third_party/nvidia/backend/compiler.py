@@ -12,8 +12,59 @@ import re
 import tempfile
 import signal
 import os
+import glob
 import subprocess
 from pathlib import Path
+
+
+def _find_cuda_include():
+    cuda_home = os.environ.get("CUDA_HOME", "")
+    if cuda_home:
+        inc = os.path.join(cuda_home, "targets", "x86_64-linux", "include")
+        if os.path.isdir(inc):
+            return inc
+    for cuda_base in ["/usr/local/cuda", "/opt/cuda"]:
+        matches = sorted(glob.glob(cuda_base + "*"))
+        for m in matches:
+            inc = os.path.join(m, "targets", "x86_64-linux", "include")
+            if os.path.isdir(inc):
+                return inc
+    raise FileNotFoundError(
+        "Cannot find CUDA include dir. Set CUDA_HOME env var "
+        "or install CUDA under /usr/local/cuda.")
+
+
+def _find_clang_resource_dir():
+    llvm_path = os.environ.get("LLVM_SYSPATH", "")
+    if llvm_path:
+        clang_dir = os.path.join(llvm_path, "lib", "clang")
+        if os.path.isdir(clang_dir):
+            versions = sorted(os.listdir(clang_dir))
+            for v in versions:
+                rd = os.path.join(clang_dir, v)
+                if os.path.isdir(rd):
+                    return rd
+
+    # Fallback: check llvm-project/install relative to repo root
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = file_dir
+    for _ in range(5):
+        repo_root = os.path.dirname(repo_root)
+    for prefix in [
+        os.path.join(repo_root, "..", "llvm-project", "install"),
+        os.path.join(repo_root, "llvm-project", "install"),
+        os.path.join(file_dir, "..", "..", "..", "..", "llvm-project", "install"),
+    ]:
+        clang_dir = os.path.join(prefix, "lib", "clang")
+        if os.path.isdir(clang_dir):
+            versions = sorted(os.listdir(clang_dir))
+            for v in versions:
+                rd = os.path.join(clang_dir, v)
+                if os.path.isdir(rd):
+                    return rd
+
+    raise FileNotFoundError(
+        "Cannot find clang resource dir. Set LLVM_SYSPATH env var.")
 
 
 def min_dot_size(target: GPUTarget):
@@ -435,16 +486,10 @@ class CUDABackend(BaseBackend):
         # D-01: Build the inference hook object with compiler construction
         # params.  These mirror _pre_compile_extern_calls setup (minus the
         # per-libpath source which is not available here).
-        _install_prefix = _os.path.join(
-            _os.path.dirname(__file__), "..", "..", "..",
-            "..", "llvm-project", "install")
-        if not _os.path.exists(_install_prefix):
-            _install_prefix = _os.path.join(_os.path.dirname(__file__), "..")
-        _resource_dir = _os.path.join(_install_prefix, "lib", "clang", "23")
-        _cuda_inc = _os.path.join(_os.path.dirname(__file__), "include")
+        _resource_dir = _find_clang_resource_dir()
+        _cuda_inc = os.path.join(os.path.dirname(__file__), "include")
         _sm = f"sm_{capability // 10}{capability % 10}"
-        _include_paths = [_cuda_inc,
-                          "/usr/local/cuda-12.8/targets/x86_64-linux/include"]
+        _include_paths = [_cuda_inc, _find_cuda_include()]
 
         _infer_hook = InferExternCallResult(_sm, _resource_dir, _include_paths)
         self._infer_hook = _infer_hook  # stored for _pre_compile_extern_calls
@@ -747,16 +792,10 @@ class CUDABackend(BaseBackend):
         if _hook is not None and _hook._llvm_ctx is not None:
             llvm_context = _hook._llvm_ctx
 
-        install_prefix = os.path.join(os.path.dirname(__file__), "..", "..", "..",
-                                      "..", "llvm-project", "install")
-        if not os.path.exists(install_prefix):
-            install_prefix = os.path.join(os.path.dirname(__file__), "..")
-
-        resource_dir = os.path.join(install_prefix, "lib", "clang", "23")
+        resource_dir = _find_clang_resource_dir()
         cuda_inc = os.path.join(os.path.dirname(__file__), "include")
         sm = f"sm_{capability // 10}{capability % 10}"
-        _include_paths = [cuda_inc,
-                          "/usr/local/cuda-12.8/targets/x86_64-linux/include"]
+        _include_paths = [cuda_inc, _find_cuda_include()]
 
         dtype_to_scalar = {
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,

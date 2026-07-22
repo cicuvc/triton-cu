@@ -9,24 +9,36 @@ Verifies:
 """
 
 import os
+import glob
 
 import pytest
 
 from triton._C.libtriton import llvm
 
-_LLVM_INSTALL = os.environ.get(
-    "LLVM_SYSPATH",
-    "/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install",
-)
-LLVM_RESOURCE_DIR = os.path.join(_LLVM_INSTALL, "lib", "clang", "23")
+_LLVM_INSTALL = os.environ.get("LLVM_SYSPATH", "")
+if _LLVM_INSTALL:
+    _clang_ver = os.path.join(_LLVM_INSTALL, "lib", "clang")
+    if os.path.isdir(_clang_ver):
+        _vers = sorted(os.listdir(_clang_ver))
+        LLVM_RESOURCE_DIR = os.path.join(_clang_ver, _vers[-1]) if _vers else ""
+    else:
+        LLVM_RESOURCE_DIR = ""
+else:
+    LLVM_RESOURCE_DIR = ""
 
 SM = "sm_120"
 
-_CUDA_BASE = "/usr/local/cuda-13.1"
-CUDA_INCLUDE = os.path.join(_CUDA_BASE, "targets", "x86_64-linux", "include")
-INCLUDE_PATHS = [CUDA_INCLUDE] if os.path.isdir(CUDA_INCLUDE) else []
+_CUDA_HOME = os.environ.get("CUDA_HOME", "")
+if not _CUDA_HOME:
+    for _base in ["/usr/local/cuda", "/opt/cuda"]:
+        _matches = sorted(glob.glob(_base + "*"))
+        if _matches:
+            _CUDA_HOME = _matches[-1]
+            break
+CUDA_INCLUDE = os.path.join(_CUDA_HOME, "targets", "x86_64-linux", "include") if _CUDA_HOME else ""
+INCLUDE_PATHS = [CUDA_INCLUDE] if CUDA_INCLUDE and os.path.isdir(CUDA_INCLUDE) else []
 
-_HAS_LLVM = os.path.isdir(LLVM_RESOURCE_DIR) and len(INCLUDE_PATHS) > 0
+_HAS_LLVM = bool(LLVM_RESOURCE_DIR) and os.path.isdir(LLVM_RESOURCE_DIR) and len(INCLUDE_PATHS) > 0
 
 
 def _make_cuda_source() -> str:

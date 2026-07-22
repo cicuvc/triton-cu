@@ -5,7 +5,7 @@ Remote: `git@github.com:cicuvc/triton-cu.git`
 
 ## Build
 - **DO NOT run `pip install -e .`** — it overwrites the venv's standard triton. Use `PYTHONPATH` for local dev.
-- **Use our self-compiled LLVM** at `/media/cicuvc/c63abdf1-0e56-4153-9228-95df5a2f239b/cicuvc/llvm-data/install` via `-DLLVM_SYSPATH=...`. Do NOT use Triton's default precompiled LLVM (symbol mismatch).
+- **Use a self-compiled LLVM** via `-DLLVM_SYSPATH=...`. Set `LLVM_SYSPATH` env var to your LLVM install prefix (e.g. `/path/to/llvm/install`). `build.sh` checks this. Do NOT use Triton's default precompiled LLVM (symbol mismatch).
 - **Use clang as compiler** (`CC=clang CXX=clang++`). Our LLVM was built with clang; gcc is too slow / memory-hungry for this project.
 - **Canonical build**: `bash build.sh` (handles cmake + ninja + lld).
   - Clang libs (CodeGen, Frontend, Driver, Sema, AST, etc.) and LLVMMIRParser are **permanently** in `CMakeLists.txt`.
