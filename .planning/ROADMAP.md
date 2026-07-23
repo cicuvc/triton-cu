@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 Return Type Inference** — Phases 1-3 (shipped 2026-07-12) — see [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
-- 🚧 **v1.1 Shared Memory Interop** — Phases 4-7 (planning)
+- ✅ **v1.1 Shared Memory Interop** — Phases 4-7 (completed 2026-07-23)
 
 ## Phases
 
@@ -79,7 +79,7 @@ Plans:
 - [x] **Phase 4: C++ Templates + Clang AST Foundation** — Device-side SharedLinearLayout/SharedTensor templates and clang AST round-trip infrastructure (completed 2026-07-12)
 - [x] **Phase 5: MLIR Op Relaxation + Spec Extraction** — Relax ttg.extern_call ODS for MemDescType; extract shared-layout JSON specs (completed 2026-07-15)
 - [x] **Phase 6: CUDA Wiring + LLVM Lowering + Frontend API** — Wire shared args through compilation; per-operand ptr addrspace(3) lowering; frontend accepts shared_memory_descriptor (completed 2026-07-15)
-- [ ] **Phase 7: E2E Verification** — Shared read+write GPU test, swizzle-correctness test, full regression
+- [x] **Phase 7: E2E Verification** — Shared read+write GPU test, swizzle-correctness test, full regression — VERIFIED ✓ 2026-07-23
 
 ## Phase Details
 
@@ -174,15 +174,12 @@ Plans:
   3. All 6 existing `test_extern_call.py` tests pass unchanged — no regression in the tensor-only path
   4. The Gluon lit suite (5/5 tests) passes unchanged — no MLIR/dialect-level regression
 
-**Plans**: 1/2 plans executed
+**Plans**: 2/2 plans executed, verified ✓
 
 Plans:
 **Wave 1**
 
 - [x] 07-01-PLAN.md — CUDA device functions: shared_accumulate + write_swizzled_2d in tt_plugin.cu
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
 - [x] 07-02-PLAN.md — E2E GPU tests: SHTEST-01 (read_write + mixed_args), SHTEST-02 (parametrized swizzle), SHTEST-03 (full regression)
 
 **UI hint**: no
@@ -197,4 +194,4 @@ Plans:
 | 4. C++ Templates + Clang AST Foundation | v1.1 | 3/3 | Complete    | 2026-07-12 |
 | 5. MLIR Op Relaxation + Spec Extraction | v1.1 | 2/2 | Complete    | 2026-07-15 |
 | 6. CUDA Wiring + LLVM Lowering + Frontend API | v1.1 | 3/3 | Complete    | 2026-07-15 |
-| 7. E2E Verification | v1.1 | 1/2 | In Progress|  |
+| 7. E2E Verification | v1.1 | 2/2 | Complete ✓ | 2026-07-23 |
