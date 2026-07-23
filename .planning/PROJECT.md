@@ -2,24 +2,20 @@
 
 ## What This Is
 
-triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds in-process CUDA C++ interop via `gl.call()` — Gluon kernels can call `__device__` template functions from `.cu` files, JIT-compiled through clang CodeGen and linked into the kernel at compile time. v1.0 completed **return-type inference** so `gl.call()` returns tensors with the CUDA-side-inferred element type, shape, and layout. v1.1 extends the interop surface to **shared memory**: Gluon `shared_memory_descriptor` buffers can be passed into device functions as a new `SharedTensor<dtype, shape, layout>&` parameter type.
+triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds in-process CUDA C++ interop via `gl.call()` — Gluon kernels can call `__device__` template functions from `.cu` files, JIT-compiled through clang CodeGen and linked into the kernel at compile time.
 
-## Current Milestone: v1.1 Shared Memory Interop
+- **v1.0** (shipped 2026-07-12): Return-type inference — `gl.call()` returns tensors with the CUDA-side-inferred element type, shape, and layout.
+- **v1.1** (shipped 2026-07-23): Shared memory interop — Gluon `shared_memory_descriptor` buffers can be passed into device functions as a new `SharedTensor<dtype, shape, layout>&` parameter type with correct addrspace-3 lowering, read+write access, and full swizzle support.
 
-**Goal:** Let Gluon kernels pass a `shared_memory_descriptor` into a CUDA C++ `__device__` function via `gl.call()` as a new `SharedTensor<dtype, shape, layout>&` parameter that maps to shared memory, backed by a new general C++ `SharedLinearLayout` representation, with correct MLIR memref lowering and shared (addrspace 3) address-space conversion.
+## Current State
 
-**Target features:**
-- New C++ `SharedTensor<dtype, shape, layout>&` device-side parameter type (mutable reference → read + write into shared memory)
-- New C++ `SharedLinearLayout` representation (offset_bases + block_bases + alignment; full arbitrary shape/stride/swizzle) — distinct from the distributed `Layout`, modeled on the existing C++ `Layout` template
-- Frontend `gl.call()` accepts `shared_memory_descriptor` arguments; type round-trips to `SharedTensor` in the clang AST
-- MLIR lowering: shared buffer represented as a `memref`, correct addrspace-3 pointer conversion, with load and store
-- Integration with the v1.0 return-type inference machinery (`TypeInspector`/`FunctionResolver` recognize `SharedTensor<T,Shape,SharedLinearLayout>`)
+**Shipped:** v1.1 Shared Memory Interop — 4 phases, 10 plans, 29 tasks completed across 12 days. 19/19 tests pass (12 GPU E2E, 1 pybind smoke, 6 lit), zero regressions.
 
-**Scope boundary:** `SharedTensor` is argument-only this milestone; returning a `shared_memory_descriptor` result from `gl.call()` is deferred.
+**Next milestone:** v1.2 or v2.0 — TBD. Candidates: shared memory return type (SHRET-01), auto-derived `result_layout` (AUTO-01), full Fp64 pipeline (FP64-01), or new feature surface.
 
 ## Core Value
 
-`gl.call()` produces MLIR result types whose element type, shape, and layout match what the CUDA C++ `__device__` function actually returns — determined by clang overload resolution + template deduction + return-type inspection — so kernels that change dtype/shape/layout (e.g. reductions, dtype casts) compile correctly with downstream IR that stays type-consistent.
+`gl.call()` produces MLIR result types whose element type, shape, and layout match what the CUDA C++ `__device__` function actually returns — determined by clang overload resolution + template deduction + return-type inspection — so kernels compile with type-consistent downstream IR. Extended so Gluon `shared_memory_descriptor` buffers can be passed into device functions as `SharedTensor<dtype, shape, layout>&` with correct addrspace-3 lowering, validated in 12 GPU E2E tests.
 
 ## Requirements
 
@@ -32,96 +28,81 @@ triton-cu is a fork of [Triton](https://github.com/triton-lang/triton) that adds
 - ✓ `std::tuple<Tensor,...>` multi-return support via `get_tuple_elem` extractors — existing
 - ✓ `use_fast_math` per-function fast-math flag — existing
 - ✓ E2E tests: elementwise add, intra-warp shuffle, reduce (shape change via manual `result_layout`), split_add tuple — existing (`test_extern_call.py`)
-- ✓ Frontend↔backend inference seam: `InferExternCallResult` hook via `codegen_fns` + single-parse suspended `CUDACompiler` with parse-counter guard — Validated in Phase 1: Seam & Cleanup
-- ✓ Bundled bug fixes: dead code removed (`compiler.py:510-513`), `f64`/`fp64` raises `NotImplementedError` at both frontend and backend layers (no silent Fp32 coercion) — Validated in Phase 1: Seam & Cleanup
-- ✓ **INFER-01**: CUDA-inferred return **shape** flows into the `ttg.extern_call` result type — Validated in Phase 2: Semantic-Time Inference
-- ✓ **INFER-02**: CUDA-inferred return **dtype** flows into the result type — Validated in Phase 2: Semantic-Time Inference
-- ✓ **INFER-03**: Inference runs at IR-build (semantic) time so op result types stay type-consistent; fixed-layout functions (`reduce`) resolved via `LookupFunctionWithPlaceholderFallback`; hook-absent raises a clear error — Validated in Phase 2: Semantic-Time Inference
-- ✓ **INFER-04**: `result_layout=` remains the requested final layout; `convert_layout` reconciles CUDA-native → user layout — Validated in Phase 2: Semantic-Time Inference
-- ✓ **INFER-05**: Bundled bug fixes (dead code, `f64` coercion guard) — Validated in Phase 2: Semantic-Time Inference
-- ✓ **TEST-01**: New E2E test (`test_reduce_f16_f32`) exercising a shape-AND-dtype-changing extern call (f16→f32 `reduce_f16`), supplying only `result_layout` — GPU output matches `x.to(float32).sum(1)` within rtol/atol=1e-2, and `ttgir` confirms `f32` + `tensor<32xf32` result type — Validated in Phase 3: Verification
-- ✓ **TEST-02**: All 4 existing extern-call tests pass unchanged (6/6 total incl. new + hook test) — Validated in Phase 3: Verification
-- ✓ **TEST-03**: lit suite unaffected (Gluon lit 5/5 pass; zero MLIR/dialect/production source changed) — Validated in Phase 3: Verification
-- ✓ **SHTYPE-01/SHTYPE-02**: `SharedLinearLayout` (OffsetBases/BlockBases NTTP carriers, `evaluate()`) and `SharedTensor<T,Shape,Layout>` (variadic `operator()` → `T&`) device templates compile as valid CUDA C++20 — Validated in Phase 4
-- ✓ **SHAST-01/SHAST-02/SHAST-03**: `SharedTensorParameter` structs + pybind11 binding, `TypeBuilder::BuildSharedTensor` forward AST construction, `TypeInspector::ParseSharedTensorType` reverse parsing — full clang AST round-trip verified via GPU-free pytest harness (`test_shared_tensor.py`, 4/4 pass) — Validated in Phase 4
-- ✓ **D-07 swizzle parity**: C++ `SharedLinearLayout::evaluate()` proven bit-identical to MLIR `LinearLayout({offsetBases, blockBases}, outDims)` composition via 5 static_assert checks — Validated in Phase 4
-- ✓ **SHMLIR-01**: `ttg.extern_call` ODS relaxed to `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` — mixed tensor+memdesc operands parse; tensor-only regression lit test passes — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
-- ✓ **SHMLIR-02**: `extractExternCallSpecs()` uses `std::variant<TensorSpecInput, SharedSpecInput>` with a `dyn_cast<MemDescType>` branch emitting shared-layout JSON (`memory_space`/`offset_bases`/`block_bases`/`alignment`) via `std::visit` — Validated in Phase 5: MLIR Op Relaxation + Spec Extraction
-- ✓ **SHAPI-01**: `gl.call()` accepts `shared_memory_descriptor` args alongside tensors — `to_tensor` bypass in `_core.py`, relaxed isinstance + `PaddedSharedLayout` rejection guard in `call_extern()`, `memory_space: "shared"` threaded via `arg_params` — Validated in Phase 6: CUDA Wiring + LLVM Lowering + Frontend API
-- ✓ **SHWIRE-01**: Shared args wired through CUDA compilation — `infer_result()` degenerate `SharedTensorParameter`, `_pre_compile_extern_calls()` consumes Phase-5 spec JSON, `ttg.extern_call_arg_spaces` module attr carries per-operand memory spaces, `BuildSharedTensor` applies `LangAS::cuda_shared` (addrspace qualifier on the pointee; non-reference type so OpaqueValueExpr lookup stays valid) — Validated in Phase 6
-- ✓ **SHLOWER-01/SHLOWER-02**: `ttg.extern_call` shared operands lower directly as `ptr addrspace(3)` (bypassing alloca+store) with subview offsets applied via `getShmemAffineBase` GEP; distributed operands keep the existing path in mixed arg lists — lit test `extern-call-shared-args.mlir` + 10/10 GPU regression tests pass — Validated in Phase 6
+- ✓ Frontend↔backend inference seam: `InferExternCallResult` hook via `codegen_fns` + single-parse suspended `CUDACompiler` with parse-counter guard — v1.0 Phase 1
+- ✓ Bundled bug fixes: dead code removed (`compiler.py:510-513`), `f64`/`fp64` raises `NotImplementedError` at both frontend and backend layers — v1.0 Phase 1
+- ✓ **INFER-01/02**: CUDA-inferred return shape+dtype flows into `ttg.extern_call` result type — v1.0 Phase 2
+- ✓ **INFER-03/04/05**: Inference at IR-build time, `result_layout=` remains final layout, fixed-layout resolve, hook-absent raise, bundled bugs — v1.0 Phase 2
+- ✓ **TEST-01/02/03**: E2E reduce f16→f32, 6/6 tests pass, 5/5 lit pass — v1.0 Phase 3
+- ✓ **SHTYPE-01/02**: `SharedLinearLayout` (OffsetBases/BlockBases NTTP carriers, `evaluate()`) and `SharedTensor<T,Shape,L>` (variadic `operator()` → `T&`) device templates compile as valid CUDA C++20 — v1.1 Phase 4
+- ✓ **SHAST-01/02/03**: `SharedTensorParameter` structs + pybind11 binding, `TypeBuilder::BuildSharedTensor` forward, `TypeInspector::ParseSharedTensorType` reverse — full clang AST round-trip — v1.1 Phase 4
+- ✓ **D-07 swizzle parity**: C++ `SharedLinearLayout::evaluate()` proven bit-identical to MLIR `LinearLayout` composition via 5 static_assert checks — v1.1 Phase 4
+- ✓ **SHMLIR-01**: `ttg.extern_call` ODS relaxed to `Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>` — mixed tensor+memdesc operands parse — v1.1 Phase 5
+- ✓ **SHMLIR-02**: `extractExternCallSpecs()` uses `std::variant<TensorSpecInput, SharedSpecInput>` with `dyn_cast<MemDescType>` branch emitting shared-layout JSON — v1.1 Phase 5
+- ✓ **SHAPI-01**: `gl.call()` accepts `shared_memory_descriptor` args alongside tensors — v1.1 Phase 6
+- ✓ **SHWIRE-01**: Shared args wired through CUDA compilation — `infer_result()` degenerate `SharedTensorParameter`, `_pre_compile_extern_calls()` spec-consumption, `ttg.extern_call_arg_spaces` module attr, `BuildSharedTensor` `LangAS::cuda_shared` — v1.1 Phase 6
+- ✓ **SHLOWER-01/02**: `ttg.extern_call` shared operands lower as `ptr addrspace(3)` (bypassing alloca+store) with subview offsets via `getShmemAffineBase` GEP — v1.1 Phase 6
+- ✓ **SHTEST-01**: E2E GPU test — shared memory read+write through `gl.call()` with `gl.barrier()` synchronization — v1.1 Phase 7
+- ✓ **SHTEST-02**: Swizzle-correctness test — 4 parametrized patterns, bit-for-bit round-trip via Python `evaluate_shared()` — v1.1 Phase 7
+- ✓ **SHTEST-03**: All 6 existing tests + 6 lit tests pass unchanged — v1.1 Phase 7 (19/19 pass, 0 fail)
 
 ### Active
 
-**Milestone v1.1 (Shared Memory Interop)** — requirements defined in `.planning/REQUIREMENTS.md`:
-- Shared-memory arguments to `gl.call()` via a new `SharedTensor<dtype, shape, layout>&` device-side parameter type (read + write) — device templates + AST round-trip done (Phase 4); MLIR op + spec extraction done (Phase 5); CUDA wiring + LLVM lowering + frontend API done (Phase 6); E2E GPU verification remains (Phase 7)
-- `shared_memory_descriptor` ↔ `SharedTensor` frontend round-trip — done (Phase 6; clang AST side validated in Phase 4)
-- MLIR memref lowering with addrspace-3 conversion (load + store) — `ptr addrspace(3)` emission done (Phase 6)
-- Integration with the v1.0 return-type inference machinery
+No active requirements. Fresh requirements will be defined during `/gsd-new-milestone`.
 
-**Deferred / future candidates:**
-- Return a `shared_memory_descriptor` result from `gl.call()` (shared-memory return type)
+### Deferred / Future
+
+- SHRET-01: Return a `shared_memory_descriptor` result from `gl.call()` (shared-memory return type)
 - AUTO-01: Make `result_layout=` optional / auto-derived from the CUDA-inferred layout
 - FP64-01: Full `Fp64` support through the entire pipeline
 - Split the 1,396-line `clang_compiler.cc` (tech debt)
+- PaddedSharedLayout shared encoding support
 
 ### Out of Scope
 
-- Returning a `shared_memory_descriptor` from `gl.call()` (shared-memory result type) — deferred to a future milestone; v1.1 is argument-only (decision 2026-07-12)
-- Making `result_layout=` fully optional / auto-derived — deferred; user chose to keep `result_layout` as an explicit final-layout request (decision 2026-07-11)
-- Full `Fp64` support through the pipeline — separate effort; only a guard/decision is in scope here
-- Refactoring the coroutine/ABI machinery (x86-64-only `X64SysVABI`, stack-dangling lambda captures) — fragile but out of scope
-- Splitting the 1,396-line `clang_compiler.cc` — tech debt, not this milestone
-- Parallel/multi-threaded CUDA compilation — scaling concern, out of scope
-- Fixing hardcoded LLVM/CUDA/clang-resource paths — build/toolchain concern, out of scope
+- Returning a `shared_memory_descriptor` from `gl.call()` (shared-memory result type) — deferred to SHRET-01
+- Making `result_layout=` fully optional / auto-derived — deferred to AUTO-01
+- Full `Fp64` support through the pipeline — separate effort
+- Refactoring the coroutine/ABI machinery (x86-64-only `X64SysVABI`, stack-dangling lambda captures)
+- Splitting the 1,396-line `clang_compiler.cc` — tech debt
+- Parallel/multi-threaded CUDA compilation — scaling concern
+- Fixing hardcoded LLVM/CUDA/clang-resource paths — build/toolchain concern
+- `PaddedSharedLayout` shared encoding — doesn't map cleanly to shared linear layout
+- Dynamic / `extern __shared__` variable-size shared allocation — requires CUDA dynamic-shared-memory ABI
+- TMA / async-copy / mbarrier interop — separate feature surface
+- Auto-inserted synchronization — user must place `gl.barrier()` explicitly
 
 ## Context
 
-- **The gap (corrected from CONCERNS.md, which is partly outdated):** The C++ patch step (`tritonPatchExternCallResultTypes`, `clang_compiler.cc:950`) already rebuilds the op with the inferred *layout* and inserts a `convert_layout`. The real remaining gap is that it **hard-errors** on shape/dtype mismatch (`clang_compiler.cc:1094-1104`) instead of adopting the CUDA-inferred shape/dtype.
-- **Why the patch step can't fix shape/dtype:** `convert_layout` cannot change shape or dtype — only layout. The op's *declared* result type (built in `_semantic.py:250-266` from `first_input.dtype` + `_compute_result_shape`) is what all downstream kernel ops (e.g. `gl.store`) are typed against. If CUDA's true shape/dtype differs, downstream IR becomes inconsistent and MLIR verification fails — hence the current defensive error.
-- **Chosen approach (decision 2026-07-11):** *Infer at semantic time.* Run CUDA type inference during IR building (in `call_extern`) so the op result type uses the CUDA-true shape+dtype+layout from the start; `result_layout` stays as the requested final layout with a `convert_layout` reconciling CUDA-native → user layout. Larger change but produces consistent downstream IR.
-- **Layering challenge:** Inference requires a full clang parse of the `.cu` (the expensive step), which today happens in the `llir` backend stage where `sm`, `resource_dir`, include paths, and the `LLVMContext` all live. The backend-agnostic Gluon semantic layer (`GluonSemantic`) does not have those. The clean seam is the backend `codegen_fns` hook (`get_codegen_implementation`, consumed via `self.builder.codegen_fns[...]`) — the same mechanism `convert_custom_types`/`min_dot_size` use — so the CUDA backend can inject a callable the semantic layer invokes.
-- **Round-trip available:** `to_linear_layout` (`gluon_ir.cc:371`) → `layoutToGluon` (`gluon_ir.cc:191`) provides MLIR encoding ↔ Python `DistributedLinearLayout`. Inferred `TensorParameter` (reg/lane/warp bases + shape) can build a `DistributedLinearLayout` for the op's native result type.
-- **dtype strings:** `ScalarType` ↔ triton dtype names: `Fp32`=`fp32`, `Fp16`=`fp16`, `Bf16`=`bf16`, `Int32`=`int32`, `Int64`=`int64`, `Fp64`=`fp64`.
-- **Environment:** self-compiled LLVM at a hardcoded path; build via `bash build.sh` → `build/libtriton.so` → copy to `python/triton/_C/libtriton.so`; run with `PYTHONPATH` set to local tree. GPU present (RTX 5090). E2E: `pytest python/test/gluon/test_extern_call.py`.
+- **v1.1 shipped:** 4 phases (Phases 4-7), 10 plans, 29 tasks, 85 commits, +15,501/-257 lines across 102 files over 12 days (2026-07-12 → 2026-07-23).
+- **Current test suite:** 19/19 pass (12 GPU E2E in `test_extern_call.py` + 1 pybind smoke + 6 lit), zero regressions from v1.0.
+- **New in v1.1:** `SharedLinearLayout`/`SharedTensor<T,Shape,L>` C++ device templates, `SharedTensorParameter` struct + pybind binding, full clang AST round-trip (TypeBuilder ↔ TypeInspector), ODS-relaxed `ttg.extern_call` for mixed tensor+memdesc operands, variant-based spec extraction, frontend `shared_memory_descriptor` acceptance in `gl.call()`, per-operand `ptr addrspace(3)` LLVM lowering with subview-offset GEPs, `gl.call()` scalar constexpr arg support.
+- **Key source locations:** `python/test/gluon/tt_plugin.cu` (device templates), `python/src/clang_compiler.cc`/`.h` (clang infrastructure), `python/src/llvm.cc` (pybind bindings), `lib/Conversion/TritonGPUToLLVM/ExternCallOpToLLVM.cpp` (LLVM lowering), `include/triton/Dialect/TritonGPU/IR/TritonGPUOps.td` (ODS), `third_party/nvidia/backend/compiler.py` (CUDA backend), `python/triton/experimental/gluon/language/_core.py`/`_semantic.py` (frontend API).
+- **Build:** Never `pip install -e .`. Use self-compiled LLVM via `-DLLVM_SYSPATH=...`, clang as compiler, `bash build.sh`. `clang_compiler.cc` compiled `-fno-rtti`. Run with `PYTHONPATH` set to local tree.
 
 ## Constraints
 
 - **Build**: Never `pip install -e .` (overwrites venv triton). Use self-compiled LLVM via `-DLLVM_SYSPATH=...`, clang as compiler, `bash build.sh`. `clang_compiler.cc` compiled `-fno-rtti`.
 - **Tech stack**: C++ (clang/LLVM APIs, MLIR, Triton/TritonGPU dialects), Python (Gluon frontend, NVIDIA backend), CUDA C++ device templates.
 - **Layering**: The Gluon semantic layer is backend-agnostic; CUDA-specific inference must reach it via the backend `codegen_fns` hook, not by importing NVIDIA backend code into the frontend.
-- **Correctness**: Downstream MLIR must stay type-consistent; verify with `llvm.verify_module` and lit/pytest. No regressions in the 4 existing extern-call tests.
-- **Performance**: Inference triggers a clang parse; must not double-compile. Reuse/cache the parsed `.cu` between the new semantic-time inference and the existing `llir`-stage bitcode compilation where practical.
+- **Correctness**: Downstream MLIR must stay type-consistent; verify with `llvm.verify_module` and lit/pytest. No regressions in the 6 existing extern-call tests.
+- **Performance**: Inference triggers a clang parse; must not double-compile. Reuse/cache the parsed `.cu` between semantic-time inference and llir-stage bitcode compilation.
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Keep `result_layout` required (not auto-derived) | User wants explicit control of the final layout; smaller blast radius than making it optional | ✓ Good — shipped v1.0; auto-derive deferred to AUTO-01 |
-| Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent; patch-step `convert_layout` cannot change shape/dtype | ✓ Good — validated E2E in v1.0 (`test_reduce_f16_f32`) |
+| Infer shape/dtype/layout at semantic (IR-build) time | Only way to keep the op result type and all downstream consumers type-consistent | ✓ Good — validated E2E in v1.0 (`test_reduce_f16_f32`) |
 | Reach CUDA inference from Gluon frontend via backend `codegen_fns` hook | Preserves frontend/backend layering; mirrors existing `convert_custom_types`/`min_dot_size` pattern | ✓ Good — seam built in Phase 1 |
-| Treat CONCERNS.md as partly outdated | Verified in code that the patch step already handles layout + convert_layout; real gap is shape/dtype hard-error | ✓ Good |
-| SharedTensor is argument-only for v1.1 | Returning shared memory is a larger scope; passing shared buffers into device fns covers the primary use case | — Pending |
-| New C++ SharedLinearLayout distinct from distributed Layout | Shared memory addressing (offset/block bases + swizzle) differs from distributed reg/lane/warp bases; needs its own representation | ✓ Good — shipped Phase 4; D-07 swizzle parity proven bit-identical to MLIR LinearLayout |
+| SharedTensor is argument-only for v1.1 | Returning shared memory is a larger scope; passing shared buffers into device fns covers the primary use case | ✓ Good — shipped v1.1; return deferred to SHRET-01 |
+| New C++ SharedLinearLayout distinct from distributed Layout | Shared memory addressing (offset/block bases + swizzle) differs from distributed reg/lane/warp bases | ✓ Good — shipped Phase 4; D-07 swizzle parity proven |
 | OffsetBases/BlockBases use RANK+N_BASES NTTP carrier structs | C++20 NTTP requires structural types with fixed-size arrays; matches existing BasisGroup pattern | ✓ Good — Phase 4 |
-| Swizzle parity verified via static_assert in synthetic .cu | `parse()` success proves constexpr checks; avoids pre-existing coroutine crash in `infer()` outside the gluon.jit pipeline | ✓ Good — 5 checks pass, highest-risk correctness concern resolved |
-
-## Evolution
-
-This document evolves at phase transitions and milestone boundaries.
-
-**After each phase transition** (via `/gsd-transition`):
-1. Requirements invalidated? → Move to Out of Scope with reason
-2. Requirements validated? → Move to Validated with phase reference
-3. New requirements emerged? → Add to Active
-4. Decisions to log? → Add to Key Decisions
-5. "What This Is" still accurate? → Update if drifted
-
-**After each milestone** (via `/gsd-complete-milestone`):
-1. Full review of all sections
-2. Core Value check — still the right priority?
-3. Audit Out of Scope — reasons still valid?
-4. Update Context with current state
+| Swizzle parity verified via static_assert in synthetic .cu | `parse()` success proves constexpr checks; avoids pre-existing coroutine crash | ✓ Good — 5 checks pass |
+| `std::variant<TensorSpecInput, SharedSpecInput>` instead of optional fields | Cleaner type-level separation per D-10 | ✓ Good — Phase 5 |
+| Per-operand memory-space discrimination in lowering | `getArgMemorySpaces` helper reads module attr; shared operands bypass alloca path | ✓ Good — Phase 6 |
+| `result_layout=[]` for void-returning `gl.call()` | Empty list means zero result types; avoids special-casing void | ✓ Good — Phase 7 |
+| `gl.call()` scalar constexpr integer args via op attributes | Avoids LLVM type inference ambiguity; separate pipeline from tensor/shared args | ✓ Good — Phase 7 |
 
 ---
-*Last updated: 2026-07-16 after Phase 6 (CUDA Wiring + LLVM Lowering + Frontend API) — shared-memory args flow end-to-end from `gl.call()` through CUDA compilation to `ptr addrspace(3)` LLVM lowering with subview-offset GEPs (SHAPI-01, SHWIRE-01, SHLOWER-01/02); verification 4/4 must-haves; zero regressions (10/10 GPU tests, 3/3 extern-call lit tests). Post-merge gate caught and fixed two regressions (undefined `ttgl` NameError in gl.call(); clang reference-type assertion abort from BuildSharedTensor's lvalue-ref wrapper). Known issue: pre-existing CUDACompiler coroutine destructor segfault outside the gluon.jit pipeline (worked around via compiler-cache pattern).*
+
+*Last updated: 2026-07-23 after v1.1 Shared Memory Interop milestone — 4 phases shipped, 19/19 tests pass, shared memory interop complete.*
