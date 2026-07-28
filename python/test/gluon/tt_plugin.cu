@@ -28,47 +28,78 @@ struct IntTuple{
     }
 };
 
-template<typename TShape, uint32_t N_WARPS>
+// Helper: extracts Shape<DIMS...> template args into a constexpr array
+template<typename ShapeType>
+struct ShapeDims;
+template<uint32_t... DIMS>
+struct ShapeDims<Shape<DIMS...>> {
+    static constexpr uint32_t RANK = sizeof...(DIMS);
+    static constexpr uint32_t All[RANK] = {DIMS...};
+};
+
+// BasisGroup: NTTP carrier for one basis group (register / lane / warp) of a
+// distributed linear layout. A linear layout is a pure linear map — it is
+// fully described by its basis rows and does NOT own a shape; the shape
+// belongs to the Tensor. All structural constants (REG_SIZE, NUM_WARPS, ...)
+// derive from the basis row counts, never from any shape.
+template<uint32_t RANK, uint32_t N_BASES>
+struct BasisGroup{
+    static constexpr uint32_t rank = RANK;
+    static constexpr uint32_t n_bases = N_BASES;
+    IntTuple<RANK> Dims[N_BASES];
+    constexpr BasisGroup(){}
+    constexpr BasisGroup(std::initializer_list<IntTuple<RANK>> basis){
+        std::copy(basis.begin(), basis.end(), Dims);
+    }
+    constexpr IntTuple<RANK> evaluate(uint32_t x) const {
+        return ([&]<size_t...IDX>(std::index_sequence<IDX...>){
+            return ((((x >> IDX) & 0x1) ? Dims[IDX] : IntTuple<RANK>{}) + ... + IntTuple<RANK>{});
+        })(std::make_index_sequence<N_BASES>{});
+    }
+    constexpr uint32_t collectRow(uint32_t rank, uint32_t bit) const {
+        return ([&]<size_t...IDX>(std::index_sequence<IDX...>){
+            return ((((Dims[IDX].Dims[rank] >> bit) & 0x1) ? (1u << IDX) : 0) | ... | 0);
+        })(std::make_index_sequence<N_BASES>{});
+    }
+    constexpr BasisGroup<RANK, N_BASES> sliceOut(uint32_t dim) const {
+        return ([&]<size_t...IDX>(std::index_sequence<IDX...>){
+            return  BasisGroup<RANK, N_BASES>{ Dims[IDX].sliceOut(dim)... };
+        })(std::make_index_sequence<N_BASES>{});
+    }
+};
+
+// Bounds check for one basis group against a shape's dims.
+// Exactness: Triton tensor dims are powers of two, so the XOR-span of
+// in-bounds rows stays in-bounds (XOR closure) — per-row checking suffices.
+template<uint32_t RANK, uint32_t N_BASES>
+constexpr bool groupInBounds(const BasisGroup<RANK, N_BASES>& g, const uint32_t (&dims)[RANK]) {
+    for (uint32_t i = 0; i < N_BASES; i++)
+        for (uint32_t r = 0; r < RANK; r++)
+            if (g.Dims[i].Dims[r] >= dims[r]) return false;
+    return true;
+}
+
+// TensorLayout: namespace shell for the distributed Layout type.
+// Layout<REGS, LANES, WARPS> is a pure linear map from (reg, lane, warp)
+// index bits to logical tensor coordinates — no shape, no N_WARPS template
+// parameters (NUM_WARPS derives from the warp basis row count).
 struct TensorLayout{
-    static constexpr uint32_t RANK = TShape::RANK;
-    static constexpr uint32_t SIZE = TShape::SIZE;
-    static constexpr uint32_t N_LANE_AXES = 5;
-    static constexpr uint32_t N_REG_AXES = __builtin_ffs(SIZE / N_WARPS) - N_LANE_AXES - 1;
-    static constexpr uint32_t N_WARP_AXES = __builtin_ffs(N_WARPS) - 1;
-
-    template<uint32_t N_BASES>
-    struct BasisGroup{
-        IntTuple<RANK> Dims[N_BASES];
-        constexpr BasisGroup(){}
-        constexpr BasisGroup(std::initializer_list<IntTuple<RANK>> basis){
-            std::copy(basis.begin(), basis.end(), Dims);
-        }
-        constexpr IntTuple<RANK> evaluate(uint32_t x) const {
-            return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ 
-                return ((((x >> IDX) & 0x1) ? Dims[IDX] : IntTuple<RANK>{}) + ... + IntTuple<RANK>{}); 
-            })(std::make_index_sequence<N_BASES>{});
-        }
-        constexpr uint32_t collectRow(uint32_t rank, uint32_t bit) const {
-            return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ 
-                return ((((Dims[IDX].Dims[rank] >> bit) & 0x1) ? (1u << IDX) : 0) | ... | 0);
-            })(std::make_index_sequence<N_BASES>{});
-        }
-        constexpr BasisGroup<N_BASES> sliceOut(uint32_t dim) const {
-            return ([&]<size_t...IDX>(std::index_sequence<IDX...>){ 
-                return  BasisGroup<N_BASES>{ Dims[IDX].sliceOut(dim)... };
-            })(std::make_index_sequence<N_BASES>{});
-        }
-    };
-
-    template<BasisGroup<N_REG_AXES> REGS>
-    struct LayoutX{};
-
-    template<BasisGroup<N_REG_AXES> REGS, BasisGroup<N_LANE_AXES> LANES, BasisGroup<N_WARP_AXES> WARPS>
+    template<auto REGS, auto LANES, auto WARPS>
     struct Layout{
+        using RegGroup = decltype(REGS);
+        using LaneGroup = decltype(LANES);
+        using WarpGroup = decltype(WARPS);
+        static_assert(RegGroup::rank == LaneGroup::rank && LaneGroup::rank == WarpGroup::rank,
+                      "reg/lane/warp basis groups must have the same rank");
+
         template<int SLICE_DIM>
         using Sliced = Layout<REGS.sliceOut(SLICE_DIM), LANES.sliceOut(SLICE_DIM), WARPS.sliceOut(SLICE_DIM)>;
 
-        static constexpr uint32_t NUM_WARPS = N_WARPS;
+        static constexpr uint32_t RANK = RegGroup::rank;
+        static constexpr uint32_t N_REG_AXES = RegGroup::n_bases;
+        static constexpr uint32_t N_LANE_AXES = LaneGroup::n_bases;
+        static constexpr uint32_t N_WARP_AXES = WarpGroup::n_bases;
+        static constexpr uint32_t NUM_WARPS = 1u << N_WARP_AXES;
         static constexpr uint32_t REG_SIZE = 1u << N_REG_AXES;
         static constexpr auto GROUP_WAPRS = WARPS;
         static constexpr auto GROUP_LANES = LANES;
@@ -83,8 +114,33 @@ struct PlaceholderLayout {
     static constexpr uint32_t REG_SIZE = 1;
 };
 
+// Detects concrete TensorLayout::Layout types (vs. PlaceholderLayout probes,
+// which carry no basis groups and skip consistency checks).
+template<typename L>
+concept ConcreteLayout = requires {
+    L::RANK;
+    L::GROUP_REGS;
+    L::GROUP_LANES;
+    L::GROUP_WAPRS;
+};
+
 template<typename T, typename TShape, typename TLayout>
 struct Tensor{
+    // Consistency checks between the tensor's shape and the layout's bases.
+    // Skipped for PlaceholderLayout probes via if constexpr.
+    static constexpr bool LAYOUT_OK = []{
+        if constexpr (ConcreteLayout<TLayout>) {
+            return TShape::RANK == TLayout::RANK &&
+                   groupInBounds(TLayout::GROUP_REGS, ShapeDims<TShape>::All) &&
+                   groupInBounds(TLayout::GROUP_LANES, ShapeDims<TShape>::All) &&
+                   groupInBounds(TLayout::GROUP_WAPRS, ShapeDims<TShape>::All);
+        } else {
+            return true;
+        }
+    }();
+    static_assert(LAYOUT_OK,
+                  "layout basis rows must have the tensor shape's rank and stay within shape dims");
+
     T data[TLayout::REG_SIZE];
 
     Tensor() = default;
@@ -103,15 +159,6 @@ struct Tensor{
 // Shared memory interop: SharedLinearLayout + SharedTensor device templates.
 // These mirror the distributed Layout/Tensor pattern but operate on byte offsets
 // into shared memory (addrspace 3) instead of register indices.
-
-// Helper: extracts Shape<DIMS...> template args into a constexpr array
-template<typename ShapeType>
-struct ShapeDims;
-template<uint32_t... DIMS>
-struct ShapeDims<Shape<DIMS...>> {
-    static constexpr uint32_t RANK = sizeof...(DIMS);
-    static constexpr uint32_t All[RANK] = {DIMS...};
-};
 
 // OffsetBases: NTTP carrier for offset basis rows (D-01)
 // Each row is an IntTuple<RANK> — the per-bit logical-dim coordinate offset.
@@ -305,8 +352,8 @@ __device__ Tensor<T, Shape<TILE_ROWS, TILE_COLS>, TMatLayout> add_bias(const Ten
     return mat; // not implemented yet
 }
 
-using TArg = typename TensorLayout<Shape<32, 32>, 1>::Layout<{{0,1},{0,2},{0,4},{0,8},{0,16}},{{1,0},{2,0},{4,0},{8,0},{16,0}},{}>;
-using TRes = typename TensorLayout<Shape<32>, 1>::Layout<{},{{1},{2},{4},{8},{16}},{}>;
+using TArg = TensorLayout::Layout<BasisGroup<2,5>{{0,1},{0,2},{0,4},{0,8},{0,16}},BasisGroup<2,5>{{1,0},{2,0},{4,0},{8,0},{16,0}},BasisGroup<2,0>{}>;
+using TRes = TensorLayout::Layout<BasisGroup<1,0>{},BasisGroup<1,5>{{1},{2},{4},{8},{16}},BasisGroup<1,0>{}>;
 
 
 template<typename T>

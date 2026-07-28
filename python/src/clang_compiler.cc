@@ -131,13 +131,29 @@ const TargetABI X64SysVABI = {
 TypeBuilder::TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S)
     : Ctx(Ctx), SemaRef(S),
       ShapeTemplateType(getTemplateDecl(Ctx, "Shape")),
-      LayoutFactoryTemplateType(getTemplateDecl(Ctx, "TensorLayout")),
       IntTupleTemplateType(getTemplateDecl(Ctx, "IntTuple")),
       IntsTemplateType(getTemplateDecl(Ctx, "Ints")),
       TensorTemplateType(getTemplateDecl(Ctx, "Tensor")),
       SharedLinearLayoutTemplateType(
           getTemplateDecl(Ctx, "SharedLinearLayout")),
-      SharedTensorTemplateType(getTemplateDecl(Ctx, "SharedTensor")) {}
+      SharedTensorTemplateType(getTemplateDecl(Ctx, "SharedTensor")) {
+  // TensorLayout is a non-template shell struct in the pure-basis design;
+  // BasisGroup is a top-level template and Layout a member template of
+  // the shell.
+  auto ShellLookup =
+      Ctx.getTranslationUnitDecl()->lookup(&Ctx.Idents.get("TensorLayout"));
+  if (!ShellLookup.empty()) {
+    Layout.ShellDecl = llvm::dyn_cast<clang::RecordDecl>(*ShellLookup.begin());
+    if (Layout.ShellDecl) {
+      auto LayoutLookup =
+          Layout.ShellDecl->lookup(&Ctx.Idents.get("Layout"));
+      if (!LayoutLookup.empty())
+        Layout.LayoutTmpl =
+            llvm::dyn_cast<clang::ClassTemplateDecl>(*LayoutLookup.begin());
+    }
+  }
+  Layout.BasisGroupTmpl = getTemplateDecl(Ctx, "BasisGroup");
+}
 
 clang::TemplateArgument TypeBuilder::mkIntegralArgUint32(uint32_t V) {
   return clang::TemplateArgument(Ctx, llvm::APSInt(llvm::APInt(32, V)),
@@ -209,57 +225,28 @@ TypeBuilder::BuildIntTuple(clang::SourceLocation SL, unsigned N) {
   return S;
 }
 
-LayoutFactoryContext
-TypeBuilder::BuildLayoutFactory(const ShapeResult &shape,
-                                uint32_t N_WARPS) {
-  LayoutFactoryContext L;
-  L.N_WARPS = N_WARPS;
-
-  auto SL = LayoutFactoryTemplateType->getLocation();
-
-  auto *args = clang::TemplateArgumentList::CreateCopy(
-      Ctx, {mkTypeArg(shape.type), mkIntegralArgUint32(N_WARPS)});
-  void *ins = nullptr;
-  if (!(L.spec = LayoutFactoryTemplateType->findSpecialization(
-            args->asArray(), ins))) {
-    L.spec = clang::ClassTemplateSpecializationDecl::Create(
-        Ctx, clang::TagTypeKind::Struct, Ctx.getTranslationUnitDecl(),
-        SL, SL, LayoutFactoryTemplateType, args->asArray(), false,
-        nullptr);
-    LayoutFactoryTemplateType->AddSpecialization(L.spec, ins);
-  }
-  if (!L.spec->hasDefinition())
-    SemaRef.InstantiateClassTemplateSpecialization(
-        SL, L.spec, clang::TSK_ImplicitInstantiation, false, false);
-
-  L.BasisGroupTmpl = dyn_cast<clang::ClassTemplateDecl>(
-      *L.spec->lookup(&Ctx.Idents.get("BasisGroup")).begin());
-  L.LayoutTmpl = dyn_cast<clang::ClassTemplateDecl>(
-      *L.spec->lookup(&Ctx.Idents.get("Layout")).begin());
-
-  L.N_LANE_AXES = EvaluateConstexpr(L.spec, "N_LANE_AXES").value();
-  L.N_REG_AXES = EvaluateConstexpr(L.spec, "N_REG_AXES").value();
-  L.N_WARP_AXES = EvaluateConstexpr(L.spec, "N_WARP_AXES").value();
-  return L;
-}
-
 std::pair<std::optional<clang::TemplateArgument>,
           clang::ClassTemplateSpecializationDecl *>
-TypeBuilder::BuildBasisGroup(const LayoutFactoryContext &LF,
-                             unsigned N_BASES,
+TypeBuilder::BuildBasisGroup(unsigned RANK,
                              llvm::SmallVector<uint32_t, 4> vecs) {
-  assert(!N_BASES || vecs.size() % N_BASES == 0);
-  auto SL = LF.BasisGroupTmpl->getLocation();
+  // Pure-basis design: the basis row count derives from the data itself.
+  assert(RANK > 0 && "basis rank must come from the tensor shape");
+  assert(vecs.size() % RANK == 0 &&
+         "flat basis vector length must be a multiple of the rank");
+  const unsigned N_BASES = vecs.size() / RANK;
+  auto SL = Layout.BasisGroupTmpl->getLocation();
   using clang::APValue;
 
+  auto RankArg = mkIntegralArgUint32(RANK);
   auto NBasesArg = mkIntegralArgUint32(N_BASES);
   void *ins = nullptr;
   clang::ClassTemplateSpecializationDecl *S;
-  if (!(S = LF.BasisGroupTmpl->findSpecialization({NBasesArg}, ins))) {
+  if (!(S = Layout.BasisGroupTmpl->findSpecialization({RankArg, NBasesArg},
+                                                      ins))) {
     S = clang::ClassTemplateSpecializationDecl::Create(
-        Ctx, clang::TagTypeKind::Struct, LF.spec, SL, SL,
-        LF.BasisGroupTmpl, {NBasesArg}, false, nullptr);
-    LF.BasisGroupTmpl->AddSpecialization(S, ins);
+        Ctx, clang::TagTypeKind::Struct, Ctx.getTranslationUnitDecl(), SL,
+        SL, Layout.BasisGroupTmpl, {RankArg, NBasesArg}, false, nullptr);
+    Layout.BasisGroupTmpl->AddSpecialization(S, ins);
   }
   if (!S->hasDefinition())
     SemaRef.InstantiateClassTemplateSpecialization(SL, S, clang::TSK_ImplicitInstantiation, false, false);
@@ -268,7 +255,6 @@ TypeBuilder::BuildBasisGroup(const LayoutFactoryContext &LF,
       clang::ElaboratedTypeKeyword::None, std::nullopt, S, false);
 
   llvm::SmallVector<APValue, 4> Elts(N_BASES);
-  auto RANK = N_BASES ? vecs.size() / N_BASES : 0;
   for (unsigned i = 0; i < N_BASES; ++i) {
     Elts[i] = APValue(APValue::UninitStruct(), 0u, 1u);
     Elts[i].getStructField(0) =
@@ -291,26 +277,26 @@ TypeBuilder::BuildBasisGroup(const LayoutFactoryContext &LF,
 }
 
 clang::QualType TypeBuilder::BuildLayout(
-    const LayoutFactoryContext &LF, clang::TemplateArgument aRegs,
-    clang::TemplateArgument aLanes, clang::TemplateArgument aWarps) {
-  auto SL = LayoutFactoryTemplateType->getLocation();
+    clang::TemplateArgument aRegs, clang::TemplateArgument aLanes,
+    clang::TemplateArgument aWarps) {
+  auto SL = Layout.LayoutTmpl->getLocation();
   auto *specArgs = clang::TemplateArgumentList::CreateCopy(
       Ctx, {aRegs, aLanes, aWarps});
   void *ins = nullptr;
   clang::ClassTemplateSpecializationDecl *Spec;
-  if (!(Spec = LF.LayoutTmpl->findSpecialization(specArgs->asArray(),
-                                                  ins))) {
+  if (!(Spec = Layout.LayoutTmpl->findSpecialization(specArgs->asArray(),
+                                                     ins))) {
     Spec = clang::ClassTemplateSpecializationDecl::Create(
-        Ctx, clang::TagTypeKind::Struct, LF.spec, SL, SL,
-        LF.LayoutTmpl, specArgs->asArray(), false, nullptr);
-    LF.LayoutTmpl->AddSpecialization(Spec, ins);
+        Ctx, clang::TagTypeKind::Struct, Layout.ShellDecl, SL, SL,
+        Layout.LayoutTmpl, specArgs->asArray(), false, nullptr);
+    Layout.LayoutTmpl->AddSpecialization(Spec, ins);
   }
   if (!Spec->hasDefinition())
     SemaRef.InstantiateClassTemplateSpecialization(SL, Spec, clang::TSK_ImplicitInstantiation, false, false);
 
   return Ctx.getTemplateSpecializationType(
       clang::ElaboratedTypeKeyword::None,
-      clang::TemplateName(LF.LayoutTmpl), specArgs->asArray(),
+      clang::TemplateName(Layout.LayoutTmpl), specArgs->asArray(),
       specArgs->asArray(), Ctx.getCanonicalTagType(Spec));
 }
 
@@ -562,26 +548,12 @@ TypeInspector::ParseShapeType(clang::QualType type) {
   return Result;
 }
 
+// ParseBasis extracts flat basis vectors from a basis-carrier NTTP
+// TemplateArgument. Shared by BasisGroup (register/lane/warp groups),
+// OffsetBases and BlockBases — all have the APValue structure:
+// Struct{Dims=Array[N_BASES]{Struct{Dims=Array[RANK]{uint32}}}}
 llvm::SmallVector<uint32_t, 4>
 TypeInspector::ParseBasis(const clang::TemplateArgument &Arg) {
-  auto TPOD =
-      llvm::dyn_cast<clang::TemplateParamObjectDecl>(Arg.getAsDecl());
-  auto &Value = TPOD->getValue().getStructField(0);
-  llvm::SmallVector<uint32_t, 8> Result;
-  for (auto I = 0u; I < Value.getArraySize(); I++) {
-    auto Basis = Value.getArrayInitializedElt(I).getStructField(0);
-    for (auto J = 0u; J < Basis.getArraySize(); J++)
-      Result.push_back(
-          Basis.getArrayInitializedElt(J).getInt().getZExtValue());
-  }
-  return Result;
-}
-
-// SHAST-03: ParseSharedBasis extracts flat basis vectors from an
-// OffsetBases or BlockBases NTTP TemplateArgument. The APValue structure
-// matches BuildBasisGroup: Struct{Dims=Array[N_BASES]{Struct{Dims=Array[RANK]{uint32}}}}
-llvm::SmallVector<uint32_t, 4>
-TypeInspector::ParseSharedBasis(const clang::TemplateArgument &Arg) {
   auto TPOD =
       llvm::dyn_cast<clang::TemplateParamObjectDecl>(Arg.getAsDecl());
   auto &OuterStruct = TPOD->getValue();
@@ -598,17 +570,13 @@ TypeInspector::ParseSharedBasis(const clang::TemplateArgument &Arg) {
 }
 
 LayoutInfo TypeInspector::ParseLayoutType(clang::QualType type) {
+  // Pure-basis design: TensorLayout::Layout<REGS, LANES, WARPS> holds the
+  // three basis groups directly as NTTPs — no parent factory shape or
+  // N_WARPS to recover.
   auto *ClassSpecDecl =
       llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
           type->getAsRecordDecl());
-  auto LayoutFactoryDecl =
-      llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
-          ClassSpecDecl->getParent());
 
-  auto LayoutShape = ParseShapeType(
-      LayoutFactoryDecl->getTemplateArgs().get(0).getAsType());
-  auto NumWarps = EvaulateConstantTemplateNTTP(
-      LayoutFactoryDecl->getTemplateArgs().get(1));
   auto RegBasis =
       ParseBasis(ClassSpecDecl->getTemplateArgs().get(0));
   auto LaneBasis =
@@ -617,11 +585,9 @@ LayoutInfo TypeInspector::ParseLayoutType(clang::QualType type) {
       ParseBasis(ClassSpecDecl->getTemplateArgs().get(2));
 
   LayoutInfo info;
-  info.LayoutShape.assign(LayoutShape.begin(), LayoutShape.end());
   info.RegBasis.assign(RegBasis.begin(), RegBasis.end());
   info.LaneBasis.assign(LaneBasis.begin(), LaneBasis.end());
   info.WarpBasis.assign(WarpBasis.begin(), WarpBasis.end());
-  info.N_WARPS = NumWarps;
   return info;
 }
 
@@ -646,8 +612,8 @@ TensorParameter TypeInspector::ParseTensorType(
 // Template arg 0: T (scalar type)
 // Template arg 1: Shape<DIMS...>
 // Template arg 2: SharedLinearLayout<OffsetBases, BlockBases, Align>
-//   SharedLinearLayout arg 0: OffsetBases NTTP → ParseSharedBasis
-//   SharedLinearLayout arg 1: BlockBases NTTP → ParseSharedBasis
+//   SharedLinearLayout arg 0: OffsetBases NTTP → ParseBasis
+//   SharedLinearLayout arg 1: BlockBases NTTP → ParseBasis
 //   SharedLinearLayout arg 2: Alignment integral
 SharedTensorParameter TypeInspector::ParseSharedTensorType(
     clang::ClassTemplateSpecializationDecl *type) {
@@ -662,9 +628,9 @@ SharedTensorParameter TypeInspector::ParseSharedTensorType(
           LayoutQType->getAsRecordDecl());
 
   auto OffsetBasis =
-      ParseSharedBasis(LayoutDecl->getTemplateArgs().get(0));
+      ParseBasis(LayoutDecl->getTemplateArgs().get(0));
   auto BlockBasis =
-      ParseSharedBasis(LayoutDecl->getTemplateArgs().get(1));
+      ParseBasis(LayoutDecl->getTemplateArgs().get(1));
   uint32_t Alignment = EvaulateConstantTemplateNTTP(
       LayoutDecl->getTemplateArgs().get(2));
 
@@ -955,12 +921,11 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
                         CustomAstConsumer &) {
     auto Shape = helper.Builder.buildShape(Param.Shape);
 
-    // D-07: PlaceholderLayout detection — when all bases are empty and
-    // N_WARPS==0, probe with PlaceholderLayout instead of building a
-    // concrete Layout<REGS,LANES,WARPS>. Enables dtype+shape-only
-    // inference without requiring resolved reg/lane/warp bases.
-    if (Param.Layout.N_WARPS == 0 &&
-        Param.Layout.RegBasis.empty() &&
+    // D-07: PlaceholderLayout detection — when all bases are empty, probe
+    // with PlaceholderLayout instead of building a concrete
+    // Layout<REGS,LANES,WARPS>. Enables dtype+shape-only inference without
+    // requiring resolved reg/lane/warp bases.
+    if (Param.Layout.RegBasis.empty() &&
         Param.Layout.LaneBasis.empty() &&
         Param.Layout.WarpBasis.empty()) {
       auto Lookup =
@@ -983,28 +948,24 @@ CUDACompiler::BuildTensor(const TensorParameter &Param) {
       // existing concrete-layout code path.
     }
 
+    // Pure-basis design: the basis rank comes from the tensor shape (the
+    // bases' component count always equals the tensor rank), and each
+    // group's row count derives from the basis data itself.
     auto &LayoutInfo = Param.Layout;
-    auto LayoutShape =
-        helper.Builder.buildShape(LayoutInfo.LayoutShape);
-
-    auto LayoutFactory = helper.Builder.BuildLayoutFactory(
-        LayoutShape, LayoutInfo.N_WARPS);
+    const unsigned Rank = Param.Shape.size();
     auto RegBasis = helper.Builder.BuildBasisGroup(
-        LayoutFactory, LayoutFactory.N_REG_AXES,
-        llvm::SmallVector<uint32_t, 4>(LayoutInfo.RegBasis.begin(),
-                                        LayoutInfo.RegBasis.end()));
+        Rank, llvm::SmallVector<uint32_t, 4>(LayoutInfo.RegBasis.begin(),
+                                             LayoutInfo.RegBasis.end()));
     auto LaneBasis = helper.Builder.BuildBasisGroup(
-        LayoutFactory, LayoutFactory.N_LANE_AXES,
-        llvm::SmallVector<uint32_t, 4>(
-            LayoutInfo.LaneBasis.begin(), LayoutInfo.LaneBasis.end()));
+        Rank, llvm::SmallVector<uint32_t, 4>(
+                  LayoutInfo.LaneBasis.begin(), LayoutInfo.LaneBasis.end()));
     auto WarpBasis = helper.Builder.BuildBasisGroup(
-        LayoutFactory, LayoutFactory.N_WARP_AXES,
-        llvm::SmallVector<uint32_t, 4>(
-            LayoutInfo.WarpBasis.begin(), LayoutInfo.WarpBasis.end()));
+        Rank, llvm::SmallVector<uint32_t, 4>(
+                  LayoutInfo.WarpBasis.begin(), LayoutInfo.WarpBasis.end()));
 
     auto Layout = helper.Builder.BuildLayout(
-        LayoutFactory, RegBasis.first.value(),
-        LaneBasis.first.value(), WarpBasis.first.value());
+        RegBasis.first.value(), LaneBasis.first.value(),
+        WarpBasis.first.value());
     Result = helper.Builder.BuildTensor(
         getQualTypeFromScalarType(helper.Builder.Ctx, Param.Type),
         Shape.type, Layout);
@@ -1090,9 +1051,9 @@ CUDACompiler::LookupFunctionWithPlaceholderFallback(
             SemaRef.getSourceManager().getMainFileID());
 
     // Build PlaceholderLayout arg types from user ParamTypes.
-    // For each TensorParameter, clone with N_WARPS=0 + empty bases
-    // and build Tensor<T,Shape,PlaceholderLayout> via the BuildTensor
-    // placeholder branch (instantiate=false to avoid Sema crash).
+    // For each TensorParameter, build Tensor<T,Shape,PlaceholderLayout>
+    // via the BuildTensor placeholder branch (instantiate=false to avoid
+    // Sema crash).
     llvm::SmallVector<clang::QualType, 4> placeholderArgTypes;
     clang::QualType elementQualType;
     bool first = true;
@@ -1697,14 +1658,14 @@ std::string tritonPatchExternCallResultTypes(
   if (!jsonObj)
     return "Return type JSON is not an object";
 
+  // InferredType: scalar + shape (owned by the tensor) + pure basis groups
+  // (the layout). The basis component count equals the tensor rank.
   struct InferredType {
     std::string scalar;
     std::vector<int64_t> shape;
-    std::vector<uint32_t> layoutShape;
     std::vector<uint32_t> regBasis;
     std::vector<uint32_t> laneBasis;
     std::vector<uint32_t> warpBasis;
-    uint32_t nWarps;
   };
   llvm::StringMap<std::vector<InferredType>> inferredMap;
 
@@ -1717,10 +1678,6 @@ std::string tritonPatchExternCallResultTypes(
       for (auto &v : *arr)
         if (auto i = v.getAsInteger())
           info.shape.push_back(*i);
-    if (auto arr = obj->getArray("layout_shape"))
-      for (auto &v : *arr)
-        if (auto i = v.getAsInteger())
-          info.layoutShape.push_back(*i);
     if (auto arr = obj->getArray("reg_basis"))
       for (auto &v : *arr)
         if (auto i = v.getAsInteger())
@@ -1733,8 +1690,6 @@ std::string tritonPatchExternCallResultTypes(
       for (auto &v : *arr)
         if (auto i = v.getAsInteger())
           info.warpBasis.push_back(static_cast<uint32_t>(*i));
-    if (auto n = obj->getInteger("n_warps"))
-      info.nWarps = static_cast<uint32_t>(*n);
     return info;
   };
 
@@ -1771,7 +1726,8 @@ std::string tritonPatchExternCallResultTypes(
 
   auto buildEncodedType =
       [&](const InferredType &info, Type elemTy) -> RankedTensorType {
-    auto rank = info.layoutShape.size();
+    // Basis component count == tensor rank (out-dims are the tensor dims).
+    auto rank = info.shape.size();
     auto unflatten = [&](const std::vector<uint32_t> &flat) {
       size_t n = rank ? flat.size() / rank : 0;
       std::vector<std::vector<int32_t>> result(n);

@@ -224,11 +224,9 @@ def _serialize_return_types(return_type_map):
         result[symbol] = [{
             "scalar": scalar_names.get(tp.type, "f32"),
             "shape": list(tp.shape),
-            "layout_shape": list(tp.layout_shape),
             "reg_basis": list(tp.reg_basis),
             "lane_basis": list(tp.lane_basis),
             "warp_basis": list(tp.warp_basis),
-            "n_warps": tp.n_warps,
         } for tp in tp_list]
     return result
 
@@ -339,26 +337,16 @@ class InferExternCallResult:
                 tp = llvm.TensorParameter()
                 tp.type = _scalar_type_for(ap["dtype"])
                 tp.shape = ap["shape"]
-                tp.layout_shape = ap["shape"]
-                # Compute minimally valid concrete bases for dtype+shape
-                # inference. The exact layout doesn't matter — we just need a
-                # valid Tensor<T,Shape,Layout<...>> type for template deduction.
-                # N_WARPS=1, all-zero bases produce a degenerate but valid layout.
+                # Minimally valid concrete bases for dtype+shape inference.
+                # The exact layout doesn't matter — we just need a valid
+                # Tensor<T,Shape,Layout<...>> type for template deduction,
+                # and only the inferred scalar+shape are consumed below.
+                # All-zero bases produce a degenerate but valid layout;
+                # row counts are arbitrary in the pure-basis design.
                 rank = len(ap["shape"])
-                size = 1
-                for d in ap["shape"]:
-                    size *= int(d)
-                n_warps = 1
-                # ffs(x) = bit_length of lowest set bit; equivalently (x & -x).bit_length()
-                _ffs_size_per_warp = (size // n_warps)
-                _lsb_bit = (_ffs_size_per_warp & -_ffs_size_per_warp).bit_length() if _ffs_size_per_warp > 0 else 0
-                n_lane_axes = 5
-                n_reg_axes = max(0, _lsb_bit - n_lane_axes - 1)
-                n_warp_axes = max(0, (n_warps & -n_warps).bit_length() - 1)
-                tp.reg_basis = [0] * (n_reg_axes * rank)
-                tp.lane_basis = [0] * (n_lane_axes * rank)
-                tp.warp_basis = [0] * (n_warp_axes * rank)
-                tp.n_warps = n_warps
+                tp.reg_basis = [0] * (1 * rank)
+                tp.lane_basis = [0] * (5 * rank)
+                tp.warp_basis = []
                 param_types.append(tp)
         req.param_types = param_types
 
@@ -857,11 +845,9 @@ class CUDABackend(BaseBackend):
                             tp = llvm.TensorParameter()
                             tp.type = _scalar_type_for(inp["dtype"])
                             tp.shape = inp["shape"]
-                            tp.layout_shape = inp["shape"]
                             tp.reg_basis = inp.get("reg_bases", [])
                             tp.lane_basis = inp.get("lane_bases", [])
                             tp.warp_basis = inp.get("warp_bases", [])
-                            tp.n_warps = inp.get("num_warps", 1)
                             param_types.append(tp)
                     req.param_types = param_types
                     requests.append(req)
@@ -902,11 +888,9 @@ class CUDABackend(BaseBackend):
                         tp = llvm.TensorParameter()
                         tp.type = _scalar_type_for(inp["dtype"])
                         tp.shape = inp["shape"]
-                        tp.layout_shape = inp["shape"]
                         tp.reg_basis = inp.get("reg_bases", [])
                         tp.lane_basis = inp.get("lane_bases", [])
                         tp.warp_basis = inp.get("warp_bases", [])
-                        tp.n_warps = inp.get("num_warps", 1)
                         param_types.append(tp)
                 req.param_types = param_types
                 requests.append(req)

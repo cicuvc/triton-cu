@@ -45,6 +45,21 @@ def reduce_kernel(x_ptr, out_ptr):
 
 
 @gluon.jit
+def add_bias_kernel(x_ptr, b_ptr, out_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([1, 32], [32, 1], [1, 1], [1, 0])
+    idx = gl.arange(0, 32, layout=gl.SliceLayout(0, layout))[None, :] \
+        + 32 * gl.arange(0, 32, layout=gl.SliceLayout(1, layout))[:, None]
+    x_vals = gl.load(x_ptr + idx)
+    # [1, 32] tensor with a broadcast (non-bijective) layout: the sliced
+    # register bases keep their row count with dim-0 components zeroed.
+    bias_idx = gl.arange(0, 32, layout=gl.SliceLayout(0, layout))[None, :]
+    bias_vals = gl.load(b_ptr + bias_idx)
+    out_vals = gl.call("python/test/gluon/tt_plugin.cu", "add_bias",
+                        x_vals, bias_vals, result_layout=layout)
+    gl.store(out_ptr + idx, out_vals)
+
+
+@gluon.jit
 def split_add_kernel(x_ptr, y_ptr, sum_ptr, diff_ptr):
     layout: gl.constexpr = gl.BlockedLayout([16], [32], [1], [0])
     idx = gl.arange(0, 512, layout=layout)
@@ -98,6 +113,35 @@ def test_reduce_different_shape():
     reduce_kernel[(1,)](x, out, num_warps=1)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, x.sum(1))
+
+
+def test_add_bias_broadcast_layout():
+    """Non-bijective (broadcast) layout on a gl.call argument.
+
+    The [1, 32] bias tensor carries the parent [32, 32] layout sliced along
+    dim 0: register bases keep their row count with dim-0 components zeroed,
+    so REG_SIZE stays 32 for a 32-element tensor (duplicates materialized,
+    matching Triton broadcast semantics). The old shape-derived design
+    (N_REG_AXES from ffs(SIZE/N_WARPS)) could not express this type at all —
+    BuildBasisGroup's row count never matched. add_bias is currently a
+    `return mat` stub; this verifies the argument type instantiates, template
+    deduction succeeds, and the return type infers correctly end-to-end.
+    """
+    torch.set_default_device('cuda')
+    x = torch.randn((32, 32), dtype=torch.float32)
+    b = torch.randn((1, 32), dtype=torch.float32)
+    out = torch.empty_like(x)
+    compiled = add_bias_kernel[(1,)](x, b, out, num_warps=1)
+    torch.cuda.synchronize()
+    # Stub semantics: returns mat unchanged.
+    torch.testing.assert_close(out, x)
+
+    # The extern_call must have been built with the [32, 32] f32 result type
+    # inferred from the CUDA return type.
+    ttgir = compiled.asm["ttgir"]
+    assert "tensor<32x32xf32" in ttgir, (
+        f"Expected tensor<32x32xf32 in ttg.extern_call result, but got:\n{ttgir}"
+    )
 
 
 @pytest.mark.parametrize("BLOCK", [512])

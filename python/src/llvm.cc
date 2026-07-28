@@ -959,15 +959,6 @@ void init_triton_llvm(py::module &&m) {
       .def_readwrite("type", &TensorParameter::Type)
       .def_readwrite("shape", &TensorParameter::Shape)
       .def_property(
-          "layout_shape",
-          [](TensorParameter &tp) -> std::vector<uint32_t> & {
-            return tp.Layout.LayoutShape;
-          },
-          [](TensorParameter &tp, std::vector<uint32_t> v) {
-            tp.Layout.LayoutShape = std::move(v);
-          },
-          py::return_value_policy::reference_internal)
-      .def_property(
           "reg_basis",
           [](TensorParameter &tp) -> std::vector<uint32_t> & {
             return tp.Layout.RegBasis;
@@ -992,15 +983,6 @@ void init_triton_llvm(py::module &&m) {
           },
           [](TensorParameter &tp, std::vector<uint32_t> v) {
             tp.Layout.WarpBasis = std::move(v);
-          },
-          py::return_value_policy::reference_internal)
-      .def_property(
-          "n_warps",
-          [](TensorParameter &tp) -> uint32_t & {
-            return tp.Layout.N_WARPS;
-          },
-          [](TensorParameter &tp, uint32_t v) {
-            tp.Layout.N_WARPS = v;
           },
           py::return_value_policy::reference_internal);
 

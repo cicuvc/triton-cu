@@ -84,7 +84,7 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 | `python/triton/experimental/gluon/language/_core.py` | `gl.call()` user-facing API (line 774) |
 | `python/triton/experimental/gluon/language/_semantic.py` | `call_extern()` — builds result IR types from first arg (line 237-268) |
 | `python/triton/experimental/gluon/language/_layouts.py` | DistributedLayout, BlockedLayout, DistributedLinearLayout Python types |
-| `tt_plugin.cu` | CUDA C++ device library (Shape, TensorLayout, Layout, Tensor templates) |
+| `python/test/gluon/tt_plugin.cu` | CUDA C++ device library (Shape, BasisGroup, TensorLayout::Layout, Tensor templates) |
 | `CMakeLists.txt` | Permanent Clang lib linkage, `-fno-rtti` for clang_compiler.cc, LLVMMIRParser |
 
 ### Important Details
@@ -93,8 +93,28 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 - **Callee remapping**: intrinsic declarations (e.g. `llvm.lifetime.start`) are not auto-created in dstMod; must explicitly `Function::Create` them.
 - **No wrappers**: C++ references become `ptr` params in LLVM IR. Lowering uses alloca+store+ptr matching clang's convention.
 
+### Pure-Basis Layout Design (register tensors)
+A distributed layout is a **pure linear map** — fully described by its basis
+rows; it does NOT own a shape. The shape belongs solely to the `Tensor`.
+This mirrors MLIR (`RankedTensorType{shape, encoding}`) and the shared-memory
+side (`SharedLinearLayout` + standalone `OffsetBases`/`BlockBases` carriers).
+
+- `BasisGroup<RANK, N_BASES>` — top-level NTTP carrier (evaluate/collectRow/sliceOut).
+- `TensorLayout` — non-template shell; `TensorLayout::Layout<REGS, LANES, WARPS>`
+  takes the three groups as `auto` NTTPs. `REG_SIZE`/`NUM_WARPS`/`N_*_AXES`
+  derive from basis row counts, never from a shape (no `ffs` formula).
+- `Tensor<T, Shape, Layout>` — static_asserts rank match + per-row basis
+  bounds vs. shape dims (exact for power-of-two dims via XOR closure).
+  `PlaceholderLayout` probes skip checks via the `ConcreteLayout` concept.
+- Non-bijective (broadcast/sliced) layouts are expressible: `Sliced<D>`
+  zeroes a dim's components, keeps row counts → duplicates materialize in
+  registers, matching Triton broadcast semantics (see `add_bias` test).
+- `LayoutInfo` (clang_compiler.h) = three flat basis vectors only — no
+  `LayoutShape`, no `N_WARPS`. The basis component count always equals the
+  tensor rank; each group's row count = `vec.size() / rank`.
+
 ### Current Limitation: Return Type Layout
-`_semantic.py:246-252` infers `gl.call()` return layout entirely from `first_input.dtype` + `first_input.shape` — the user must manually supply the correct `result_layout=`. This is wrong for functions where the return type's element type, shape, or layout differs from the first argument (e.g., `add_bias` in `tt_plugin.cu:117` narrows the bias tensor shape to `[1, TILE_COLS]`).
+`_semantic.py:246-252` infers `gl.call()` return layout entirely from `first_input.dtype` + `first_input.shape` — the user must manually supply the correct `result_layout=`. This is wrong for functions where the return type's element type, shape, or layout differs from the first argument (e.g., `add_bias` in `tt_plugin.cu:351` narrows the bias tensor shape to `[1, TILE_COLS]`).
 
 ## Return Type Inference (in-progress)
 Goal: perform proper C++ overload resolution + template argument deduction + return type inspection in clang Sema to determine `gl.call()` return layout automatically.
@@ -110,7 +130,7 @@ Goal: perform proper C++ overload resolution + template argument deduction + ret
 | `CUDACompiler::EvaluateFunctionReturnType()` | Calls `TypeInspector::DispatchTypeParsing(FD->getCallResultType())` to get the actual return `TensorParameter` |
 
 ### Integration Plan
-1. **Add `TypeInspector`** to `clang_compiler.cc` — parse clang `ClassTemplateSpecializationDecl` back to `TensorParameter` (scalar type, shape dims, layout bases, N_WARPS).
+1. **Add `TypeInspector`** to `clang_compiler.cc` — parse clang `ClassTemplateSpecializationDecl` back to `TensorParameter` (scalar type, shape dims, layout bases).
 2. **Separate `FunctionResolver`** from `TensorTypeHelpers::InstantiateFunction()` — currently it does lookup + instantiation inline; split so we can evaluate the return type *after* resolution but before codegen.
 3. **Call `EvaluateFunctionReturnType()`** in `CustomAstConsumer::HandleTranslationUnit()` after `InstantiateFunction()` and store the result on the instantiation struct.
 4. **Plumb return `TensorParameter` back** through the Python bindings (`compile_cuda_to_module` result tuple) so `_pre_compile_extern_calls()` can use it.
@@ -122,10 +142,10 @@ Goal: perform proper C++ overload resolution + template argument deduction + ret
 MLIR encoding (ttg.extern_call input operands)
   │  extractExternCallSpecs() — toLinearLayout(shape, encoding)
   ▼
-TensorParameter {ScalarType, Shape, RegBasis, LaneBasis, WarpBasis, N_WARPS}
-  │  CustomAstConsumer — BuildLayoutFactory → BuildBasisGroup → BuildLayout → BuildTensor
+TensorParameter {ScalarType, Shape, RegBasis, LaneBasis, WarpBasis}
+  │  CustomAstConsumer — BuildBasisGroup → BuildLayout → BuildTensor
   ▼
-clang AST: Tensor<{scalar}, Shape<dims...>, Layout<REGS, LANES, WARPS>>
+clang AST: Tensor<{scalar}, Shape<dims...>, TensorLayout::Layout<REGS, LANES, WARPS>>
   │  FunctionResolver::LookupFunction + Sema template deduction
   ▼
 clang FunctionDecl (resolved + instantiated)

@@ -126,12 +126,13 @@ struct Dims {
 
 enum class ScalarType { Int32, Int64, Fp32, Fp16, Bf16, Fp8e4m3, Fp8e5m2, UInt32, UInt64 };
 
+// LayoutInfo: a distributed layout is a pure linear map — just the three
+// basis groups. It carries no shape (the shape belongs to TensorParameter)
+// and no N_WARPS (the warp count derives from the warp basis row count).
 struct LayoutInfo {
-  std::vector<uint32_t> LayoutShape;
   std::vector<uint32_t> RegBasis;
   std::vector<uint32_t> LaneBasis;
   std::vector<uint32_t> WarpBasis;
-  uint32_t N_WARPS = 0;
 };
 
 // SHAST-01: SharedLinearLayout info — flat representation matching
@@ -172,11 +173,14 @@ struct ShapeResult {
   Dims dims;
 };
 
-struct LayoutFactoryContext {
-  clang::ClassTemplateSpecializationDecl *spec = nullptr;
-  clang::ClassTemplateDecl *BasisGroupTmpl = nullptr;
-  clang::ClassTemplateDecl *LayoutTmpl = nullptr;
-  unsigned N_WARPS = 0, N_LANE_AXES = 0, N_REG_AXES = 0, N_WARP_AXES = 0;
+// LayoutTemplates: cached template decls for the pure-basis layout design.
+// TensorLayout is a non-template shell struct; BasisGroup is a standalone
+// top-level template; Layout is a member template of the shell taking the
+// three basis groups as `auto` NTTPs.
+struct LayoutTemplates {
+  clang::RecordDecl *ShellDecl = nullptr; // TensorLayout (non-template shell)
+  clang::ClassTemplateDecl *BasisGroupTmpl = nullptr; // BasisGroup<RANK, N>
+  clang::ClassTemplateDecl *LayoutTmpl = nullptr;     // TensorLayout::Layout
 };
 
 // ============================================================
@@ -255,12 +259,12 @@ struct TypeBuilder {
   clang::ASTContext &Ctx;
   clang::Sema &SemaRef;
   clang::ClassTemplateDecl *ShapeTemplateType;
-  clang::ClassTemplateDecl *LayoutFactoryTemplateType;
   clang::ClassTemplateDecl *IntTupleTemplateType;
   clang::ClassTemplateDecl *IntsTemplateType;
   clang::ClassTemplateDecl *TensorTemplateType;
   clang::ClassTemplateDecl *SharedLinearLayoutTemplateType = nullptr;
   clang::ClassTemplateDecl *SharedTensorTemplateType = nullptr;
+  LayoutTemplates Layout;
 
   TypeBuilder(clang::ASTContext &Ctx, clang::Sema &S);
   clang::TemplateArgument mkIntegralArgUint32(uint32_t V);
@@ -272,14 +276,13 @@ struct TypeBuilder {
   clang::ClassTemplateSpecializationDecl *
   BuildIntTuple(clang::SourceLocation SL, unsigned N);
   clang::QualType BuildInts(uint32_t N);
-  LayoutFactoryContext BuildLayoutFactory(const ShapeResult &shape,
-                                          uint32_t N_WARPS);
+  // Builds BasisGroup<RANK, N_BASES> as an NTTP TemplateArgument.
+  // N_BASES derives from the basis data itself (vecs.size() / RANK),
+  // never from any shape.
   std::pair<std::optional<clang::TemplateArgument>,
             clang::ClassTemplateSpecializationDecl *>
-  BuildBasisGroup(const LayoutFactoryContext &LF, unsigned N_BASES,
-                  llvm::SmallVector<uint32_t, 4> vecs);
-  clang::QualType BuildLayout(const LayoutFactoryContext &LF,
-                              clang::TemplateArgument aRegs,
+  BuildBasisGroup(unsigned RANK, llvm::SmallVector<uint32_t, 4> vecs);
+  clang::QualType BuildLayout(clang::TemplateArgument aRegs,
                               clang::TemplateArgument aLanes,
                               clang::TemplateArgument aWarps);
   clang::QualType BuildTensor(clang::QualType ElementType,
@@ -307,8 +310,6 @@ struct TypeInspector {
   llvm::SmallVector<uint32_t, 4> ParseShapeType(clang::QualType type);
   llvm::SmallVector<uint32_t, 4>
   ParseBasis(const clang::TemplateArgument &Arg);
-  llvm::SmallVector<uint32_t, 4>
-  ParseSharedBasis(const clang::TemplateArgument &Arg);
   LayoutInfo ParseLayoutType(clang::QualType type);
   TensorParameter
   ParseTensorType(clang::ClassTemplateSpecializationDecl *type);
