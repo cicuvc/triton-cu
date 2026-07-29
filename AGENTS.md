@@ -93,7 +93,7 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 - **Callee remapping**: intrinsic declarations (e.g. `llvm.lifetime.start`) are not auto-created in dstMod; must explicitly `Function::Create` them.
 - **No wrappers**: C++ references become `ptr` params in LLVM IR. Lowering uses alloca+store+ptr matching clang's convention.
 - **Memory effects**: `TTG_ExternCallOp` implements `MemoryEffectOpInterface` — each memdesc operand gets conservative `MemRead+MemWrite<SharedMemory>` effects (the C++ `SharedTensor&` signature does not distinguish). Membar therefore inserts barriers around `gl.call` automatically; user-written `gl.barrier()` remains compatible (dedup via sync).
-- **No CUDA-internal sync**: device functions must NOT call `__syncthreads`, `__barrier_sync`, `__threadfence*` — once inlined into the kernel, MLIR cannot model such a synchronization point (and it can deadlock under warp specialization). `CUDACompiler::CheckForbiddenSync` rejects them at instantiation time, including through same-TU callees (uninstantiated template callees are a known blind spot).
+- **No CUDA-internal sync**: device functions must NOT call `__syncthreads`, `__barrier_sync`, `__threadfence*` — once inlined into the kernel, MLIR cannot model such a synchronization point (and it can deadlock under warp specialization). `CUDACompiler::CheckForbiddenSync` rejects them at instantiation time, including through same-TU callees (uninstantiated template callees are a known blind spot). Use **named barriers** instead (see below): the callee synchronizes on a caller-provided `const NamedBarrier&`, which CheckForbiddenSync permits because the scope is caller-controlled.
 - **fp16 element type is `_Float16`** (`Ctx.Float16Ty`), NOT `__fp16`: `__fp16` is storage-only in clang (illegal as function return/parameter type) and breaks `shared_accessor<T>` instantiation. Same `half` IR type either way.
 
 ### Shared-memory device library (tt_plugin.cu)
@@ -112,6 +112,73 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 - **dtype chain**: `ScalarType` has `Int8` (SignedCharTy); bf16 maps to
   `Ctx.BFloat16Ty` for inference only — full bf16 E2E (cuda_bf16.h
   `__nv_bfloat16` type identity) and fp8 dtype mapping are still TODO.
+
+## Named Barriers (`gl.allocate_named_barrier`)
+
+Hardware named barriers (PTX `bar.sync`/`bar.arrive id,count`; 16 per CTA) as
+first-class MLIR resource objects. Design principle: the **callee declares
+WHERE** to synchronize (a `bar.sync()` call inside a device function), the
+**caller's token decides WHO** participates (which warp groups, which barrier
+ID, what arrival count) — a CUDA callee never hardcodes `__syncthreads()`
+scope.
+
+### API
+```python
+bar = gl.allocate_named_barrier()        # count inferred
+bar = gl.allocate_named_barrier(256)     # explicit count (cross-warp-group / arrive)
+bar.sync()                               # bar.sync id, count (arrive+wait)
+bar.arrive()                             # bar.arrive id, count (producer; needs explicit count)
+gl.call(src, "f", x, bar, result_layout=...)   # CUDA side: const NamedBarrier&
+```
+CUDA side (`tt_plugin.cu`): `struct NamedBarrier { int id; int count; }` with
+`sync()`/`arrive()` asm wrappers. Passed by pointer as a materialized
+`{i32, i32}` struct constant — same alloca+store+ptr convention as tensors.
+
+### Semantics
+- **ID allocation** (`NamedBarrierAllocation.cpp`, in `make_llir` after
+  `add_allocate_warp_groups`, before `add_to_llvmir`): first-fit graph
+  coloring over `mlir::Liveness` assigns HW IDs 1-15. Tokens with disjoint
+  live ranges share an ID; ID 0 is permanently reserved (default CTA
+  barrier); warp-spec switch-loop (1) and partition IDs (2..2+P-1) are
+  pre-colored over the ws op's interval (tokens outside ws may reuse them);
+  tokens in concurrently executing ws regions interfere. Exhaustion is a
+  compile error ("cannot spill").
+- **Count inference** (when `count` omitted): all uses must reside in a
+  single warp group with sync/extern-call uses only → count = that group's
+  `lookupNumWarps(use) * 32`. Cross-warp-group usage or any `arrive` use
+  without explicit count → compile error. Explicit count differing from the
+  inferred union of use-site threads → warning (explicit wins).
+- **Warp-spec**: `ConvertWarpSpecializeToLLVM::isBarrierOp` only matches
+  operand-less `NVVM::BarrierOp` (compiler-generated warpgroup barriers);
+  user named barriers keep their assigned ID. Tokens captured into
+  partitions flow as dummy-i32 shared-memory captures; lowering traces
+  partition block args back to the defining alloc for id/count.
+- **MLIR ops**: `ttg.alloc_named_barrier` (not Pure — CSE must never merge
+  allocations; `count`/`barrier_id` attrs backfilled by the pass),
+  `ttg.named_barrier_sync`, `ttg.named_barrier_arrive`. `ttg.extern_call`
+  accepts the token as an operand and reports conservative shared-memory
+  effects when one is present.
+- **Bitcode decoupling**: spec extraction emits only `{"named_barrier": true}`
+  (type marker) — mangled names/bitcode depend on the `const NamedBarrier&`
+  QualType, never on id/count values, so allocation can run after
+  `_pre_compile_extern_calls`.
+
+### Key files / tests
+| File | Role |
+|------|------|
+| `lib/Dialect/TritonNvidiaGPU/Transforms/NamedBarrierAllocation.cpp` | liveness coloring + count inference/validation |
+| `lib/Conversion/TritonGPUToLLVM/MemoryOpToLLVM.cpp` | sync/arrive → `NVVM::BarrierOp`/`BarrierArriveOp`; alloc erasure |
+| `lib/Conversion/TritonGPUToLLVM/ExternCallOpToLLVM.cpp` | `{i32,i32}` struct materialization; `findNamedBarrierAlloc` (block-arg tracing) |
+| `python/src/clang_compiler.{cc,h}` | `NamedBarrierSpecInput`/`NamedBarrierParam` markers; `getNamedBarrierParamType` (record lookup → `const NamedBarrier&`) |
+| `python/triton/experimental/gluon/language/_core.py` | `named_barrier`/`named_barrier_type`, `allocate_named_barrier` |
+| `test/TritonNvidiaGPU/named-barrier-*.mlir` | lit: allocation, error diagnostics, lowering |
+| `python/test/gluon/test_extern_call.py` | E2E: Gluon sync (PTX assert), CUDA-internal sync rotation, warp-spec producer/consumer, cross-region error |
+
+### Follow-ups (not implemented)
+- Extract `NamedBarrier` (with `Tensor`/`Shape`/etc.) into a bundled public
+  header injected via clang `-I` instead of per-library definition.
+- consan-style dynamic checking of arrive/sync phase pairing (statically
+  unverifiable, same as raw CUDA).
 
 ### Direction: NVMMA / TMA / wgmma / tcgen05 (not implemented yet)
 - `extractExternCallSpecs` currently flattens NVMMAShared encodings to raw
