@@ -747,6 +747,24 @@ void LocalAllocOp::getEffects(
                          SharedMemory::get());
 }
 
+// ExternCallOp
+void ExternCallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  // The called CUDA device function receives shared-memory operands by
+  // reference (SharedTensor&) and may read or write them — the signature does
+  // not distinguish. Conservatively report both effects per memdesc operand
+  // so Membar inserts the barriers required for cross-thread visibility.
+  for (auto &operand : getOperation()->getOpOperands()) {
+    if (isa<MemDescType>(operand.get().getType())) {
+      effects.emplace_back(MemoryEffects::Read::get(), &operand,
+                           SharedMemory::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &operand,
+                           SharedMemory::get());
+    }
+  }
+}
+
 OpFoldResult LocalAllocOp::fold(FoldAdaptor adaptor) {
   if (getType().getMutableMemory())
     return {};

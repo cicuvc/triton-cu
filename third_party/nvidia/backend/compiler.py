@@ -216,8 +216,8 @@ def _serialize_return_types(return_type_map):
     """Serialize return type map (symbol -> list of TensorParameter) to JSON dict."""
     scalar_names = {
         llvm.ScalarType.Fp32: "f32", llvm.ScalarType.Fp16: "f16",
-        llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int32: "i32",
-        llvm.ScalarType.Int64: "i64",
+        llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int8: "i8",
+        llvm.ScalarType.Int32: "i32", llvm.ScalarType.Int64: "i64",
     }
     result = {}
     for symbol, tp_list in return_type_map.items():
@@ -296,8 +296,9 @@ class InferExternCallResult:
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
             "f16": llvm.ScalarType.Fp16, "fp16": llvm.ScalarType.Fp16,
             "bf16": llvm.ScalarType.Bf16,
-            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32,
-            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64,
+            "i8": llvm.ScalarType.Int8, "s8": llvm.ScalarType.Int8, "int8": llvm.ScalarType.Int8,
+            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32, "int32": llvm.ScalarType.Int32,
+            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64, "int64": llvm.ScalarType.Int64,
         }
 
         def _scalar_type_for(dtype_str):
@@ -359,8 +360,8 @@ class InferExternCallResult:
 
         _scalar_names = {
             llvm.ScalarType.Fp32: "f32", llvm.ScalarType.Fp16: "f16",
-            llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int32: "i32",
-            llvm.ScalarType.Int64: "i64",
+            llvm.ScalarType.Bf16: "bf16", llvm.ScalarType.Int8: "i8",
+            llvm.ScalarType.Int32: "i32", llvm.ScalarType.Int64: "i64",
         }
         inferred = []
         for result_tuple in results:
@@ -789,8 +790,9 @@ class CUDABackend(BaseBackend):
             "f32": llvm.ScalarType.Fp32, "fp32": llvm.ScalarType.Fp32,
             "f16": llvm.ScalarType.Fp16, "fp16": llvm.ScalarType.Fp16,
             "bf16": llvm.ScalarType.Bf16,
-            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32,
-            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64,
+            "i8": llvm.ScalarType.Int8, "s8": llvm.ScalarType.Int8, "int8": llvm.ScalarType.Int8,
+            "i32": llvm.ScalarType.Int32, "s32": llvm.ScalarType.Int32, "int32": llvm.ScalarType.Int32,
+            "i64": llvm.ScalarType.Int64, "s64": llvm.ScalarType.Int64, "int64": llvm.ScalarType.Int64,
         }
 
 

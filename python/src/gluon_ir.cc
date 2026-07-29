@@ -646,14 +646,20 @@ void init_gluon_ir(py::module &&m) {
                 else ty = builder.getF32Type();
                 typeAttrs.push_back(TypeAttr::get(ty));
 
+                // Build the value attribute matching the declared scalar
+                // type — storing every value as F32FloatAttr corrupts i32
+                // constants and cannot represent i64 (e.g. pointer args).
                 auto pyVal = scalarVals[i];
-                if (pybind11::isinstance<pybind11::float_>(pyVal) ||
-                    pybind11::isinstance<pybind11::int_>(pyVal)) {
+                if (name == "i1") {
+                  valAttrs.push_back(builder.getBoolAttr(
+                      pybind11::cast<bool>(pyVal)));
+                } else if (name == "i32" || name == "i64") {
+                  valAttrs.push_back(IntegerAttr::get(
+                      ty, pybind11::cast<int64_t>(pyVal)));
+                } else if (pybind11::isinstance<pybind11::float_>(pyVal) ||
+                           pybind11::isinstance<pybind11::int_>(pyVal)) {
                   float fv = pybind11::cast<float>(pyVal);
                   valAttrs.push_back(builder.getF32FloatAttr(fv));
-                } else if (pybind11::isinstance<pybind11::bool_>(pyVal)) {
-                  bool bv = pybind11::cast<bool>(pyVal);
-                  valAttrs.push_back(builder.getBoolAttr(bv));
                 } else {
                   valAttrs.push_back(builder.getF32FloatAttr(0.0f));
                 }

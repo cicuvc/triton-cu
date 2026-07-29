@@ -6,7 +6,16 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as ttgl
 from triton._internal_testing import is_blackwell, is_cuda, is_hip, is_hopper_or_newer, get_hip_lds_size
 from triton._C.libtriton.gluon_ir import make_cga_layout
-from triton.experimental.gluon.language.amd.gfx1250 import PartitionedSharedLayout
+try:
+    from triton.experimental.gluon.language.amd.gfx1250 import PartitionedSharedLayout
+except ImportError:
+    # AMD backend is not present in this fork (NV-only); AMD-only tests are
+    # already guarded by is_hip() skips, so a None placeholder is safe.
+    PartitionedSharedLayout = None
+
+# Whether the gluon language namespace exposes the AMD submodule (MFMA/WMMA
+# layouts). False in this NV-only fork; AMD layout entries below are guarded.
+_HAS_AMD = hasattr(ttgl, "amd")
 from triton.experimental.gluon.language.nvidia.blackwell import TensorMemoryLayout, allocate_tensor_memory
 
 THREADS_PER_WARP = triton.runtime.driver.active.get_current_target().warp_size
@@ -814,12 +823,6 @@ def _reduce_layouts():
         ttgl.BlockedLayout([1, 4], [8, THREADS_PER_WARP // 8], [4, 1], [0, 1]),
         ttgl.NVMMADistributedLayout(version=[2, 0], warps_per_cta=[2, 4], instr_shape=[16, 8]),
         ttgl.NVMMADistributedLayout(version=[3, 0], warps_per_cta=[4, 1], instr_shape=[16, 16, 16]),
-        ttgl.amd.AMDMFMALayout(version=1, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
-        ttgl.amd.AMDMFMALayout(version=2, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
-        ttgl.amd.AMDMFMALayout(version=3, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
-        ttgl.amd.AMDMFMALayout(version=4, instr_shape=[32, 32, 16], transposed=True, warps_per_cta=[1, 4]),
-        ttgl.amd.AMDWMMALayout(version=1, transposed=True, warp_bases=[[0, 1], [0, 2]]),
-        ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[0, 1], [0, 2]]),
         ttgl.DotOperandLayout(
             parent=ttgl.NVMMADistributedLayout(version=[2, 0], warps_per_cta=[2, 4], instr_shape=[16, 8]),
             operand_index=1, k_width=8),
@@ -833,11 +836,23 @@ def _reduce_layouts():
                 parent=ttgl.NVMMADistributedLayout(version=[2, 0], warps_per_cta=[4, 1, 1], instr_shape=[1, 16, 8]),
                 operand_index=1, k_width=2)),
     ])
+    if _HAS_AMD:
+        layouts += _filter_layouts([
+            ttgl.amd.AMDMFMALayout(version=1, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
+            ttgl.amd.AMDMFMALayout(version=2, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
+            ttgl.amd.AMDMFMALayout(version=3, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[1, 4]),
+            ttgl.amd.AMDMFMALayout(version=4, instr_shape=[32, 32, 16], transposed=True, warps_per_cta=[1, 4]),
+            ttgl.amd.AMDWMMALayout(version=1, transposed=True, warp_bases=[[0, 1], [0, 2]]),
+            ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[0, 1], [0, 2]]),
+        ])
 
+    mma_types = (ttgl.NVMMADistributedLayout, )
+    if _HAS_AMD:
+        mma_types = (ttgl.amd.AMDMFMALayout, ttgl.amd.AMDWMMALayout) + mma_types
     rets = []
     for (M, N) in shapes:
         for layout in layouts:
-            if isinstance(layout, (ttgl.amd.AMDMFMALayout, ttgl.amd.AMDWMMALayout, ttgl.NVMMADistributedLayout)):
+            if isinstance(layout, mma_types):
                 instr_shape = layout.instr_shape
                 if M < instr_shape[0] or N < instr_shape[1]:
                     continue
@@ -1223,6 +1238,7 @@ _mma_pairs = [
         ttgl.NVMMADistributedLayout(version=[3, 0], warps_per_cta=[4, 1], instr_shape=[16, 128, 16]),
         ttgl.NVMMADistributedLayout(version=[3, 0], warps_per_cta=[4, 1], instr_shape=[16, 64, 16]),
     ],
+] + ([
     # AMD MFMA v1 layouts
     [
         ttgl.amd.AMDMFMALayout(version=1, instr_shape=[32, 32, 8], transposed=True, warps_per_cta=[2, 2]),
@@ -1269,7 +1285,7 @@ _mma_pairs = [
         ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[0, 1], [0, 2], [1, 0], [2, 0]]),
         ttgl.amd.AMDWMMALayout(version=2, transposed=True, warp_bases=[[1, 0], [2, 0], [4, 0], [8, 0]]),
     ],
-]
+] if _HAS_AMD else [])
 
 
 @pytest.mark.parametrize("M, N", [[16, 16], [64, 1], [1, 64], [64, 64], [128, 128], [256, 256]])

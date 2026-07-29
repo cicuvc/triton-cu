@@ -124,7 +124,7 @@ struct Dims {
   uint64_t SIZE = 1;
 };
 
-enum class ScalarType { Int32, Int64, Fp32, Fp16, Bf16, Fp8e4m3, Fp8e5m2, UInt32, UInt64 };
+enum class ScalarType { Int8, Int32, Int64, Fp32, Fp16, Bf16, Fp8e4m3, Fp8e5m2, UInt32, UInt64 };
 
 // LayoutInfo: a distributed layout is a pure linear map — just the three
 // basis groups. It carries no shape (the shape belongs to TensorParameter)
@@ -209,8 +209,12 @@ inline ScalarType getScalarTypeFromQualType(clang::ASTContext &Ctx,
                                              clang::QualType Type) {
   if (Type.getCanonicalType() == Ctx.FloatTy)
     return ScalarType::Fp32;
-  if (Type.getCanonicalType() == Ctx.HalfTy)
+  if (Type.getCanonicalType() == Ctx.Float16Ty)
     return ScalarType::Fp16;
+  if (Type.getCanonicalType() == Ctx.BFloat16Ty)
+    return ScalarType::Bf16;
+  if (Type.getCanonicalType() == Ctx.SignedCharTy)
+    return ScalarType::Int8;
   if (Type.getCanonicalType() == Ctx.IntTy)
     return ScalarType::Int32;
   if (Type.getCanonicalType() == Ctx.LongLongTy)
@@ -236,7 +240,15 @@ inline clang::QualType getQualTypeFromScalarType(clang::ASTContext &Ctx,
   case ScalarType::Fp32:
     return Ctx.FloatTy;
   case ScalarType::Fp16:
-    return Ctx.HalfTy;
+    // _Float16 (not __fp16/HalfTy): __fp16 is storage-only in clang — it
+    // cannot be used as a function return/parameter type, which breaks
+    // shared_accessor<T>::load()/store(). _Float16 lowers to the same
+    // `half` IR type and is a full arithmetic type.
+    return Ctx.Float16Ty;
+  case ScalarType::Bf16:
+    return Ctx.BFloat16Ty;
+  case ScalarType::Int8:
+    return Ctx.SignedCharTy;
   case ScalarType::Int32:
     return Ctx.IntTy;
   case ScalarType::Int64:
@@ -408,6 +420,9 @@ struct CUDACompiler {
                TupleType>
   EvaluateFunctionReturnType(clang::FunctionDecl *FD);
   llvm::Function *InstantiationFunction(clang::FunctionDecl *);
+  // Returns an error message if FD's body (or a reachable same-TU callee)
+  // contains a forbidden CUDA synchronization/fence primitive; "" if clean.
+  std::string CheckForbiddenSync(clang::FunctionDecl *);
   std::unique_ptr<llvm::Module> EmitFinalModule();
 
   // INFER-07: Split-path compile — runs inference+codegen+emit phases

@@ -92,6 +92,39 @@ llvm.to_module → link_cuda_bitcode (CloneFunctionInto)
 - **Ret-type fix**: named `%struct.Tensor` from clone has different `Type*` than literal `{[16 x float]}` even in same LLVMContext. alloca+store+load launders the type.
 - **Callee remapping**: intrinsic declarations (e.g. `llvm.lifetime.start`) are not auto-created in dstMod; must explicitly `Function::Create` them.
 - **No wrappers**: C++ references become `ptr` params in LLVM IR. Lowering uses alloca+store+ptr matching clang's convention.
+- **Memory effects**: `TTG_ExternCallOp` implements `MemoryEffectOpInterface` — each memdesc operand gets conservative `MemRead+MemWrite<SharedMemory>` effects (the C++ `SharedTensor&` signature does not distinguish). Membar therefore inserts barriers around `gl.call` automatically; user-written `gl.barrier()` remains compatible (dedup via sync).
+- **No CUDA-internal sync**: device functions must NOT call `__syncthreads`, `__barrier_sync`, `__threadfence*` — once inlined into the kernel, MLIR cannot model such a synchronization point (and it can deadlock under warp specialization). `CUDACompiler::CheckForbiddenSync` rejects them at instantiation time, including through same-TU callees (uninstantiated template callees are a known blind spot).
+- **fp16 element type is `_Float16`** (`Ctx.Float16Ty`), NOT `__fp16`: `__fp16` is storage-only in clang (illegal as function return/parameter type) and breaks `shared_accessor<T>` instantiation. Same `half` IR type either way.
+
+### Shared-memory device library (tt_plugin.cu)
+- `shared_accessor<T>` — scalar ld/st.shared at b8/b16/b32/b64 by `sizeof(T)`.
+- `shared_load_vector` / `shared_store_vector` — 4/8/16-byte vector accesses
+  (b32/v2.b32/v4.b32); `SharedTensor::loadVector<N>/storeVector<N>` add
+  alignment `__trap` + debug contiguity assert.
+- `SharedTensor::flattenCoords` / `byteOffsetOf` — constexpr index math shared
+  by `operator()`, vector access, ldmatrix and cp.async paths.
+- `ldmatrix_x4_b16(shm, fragBase, out[4])` — 16x16 b16 tile load; lane
+  mapping and fragment layout documented at the definition.
+- `cp_async_ca` / `cp_async_cg_16` / `cp_async_commit` / `cp_async_wait<N>`,
+  plus `SharedTensor::cpAsyncFromGlobal<N>(gsrc, flatBase)`. Global pointers
+  reach device functions as **i64 scalars** (`x.data_ptr()` via constexpr →
+  `gl.call` scalar arg; int scalars beyond i32 range map to i64).
+- **dtype chain**: `ScalarType` has `Int8` (SignedCharTy); bf16 maps to
+  `Ctx.BFloat16Ty` for inference only — full bf16 E2E (cuda_bf16.h
+  `__nv_bfloat16` type identity) and fp8 dtype mapping are still TODO.
+
+### Direction: NVMMA / TMA / wgmma / tcgen05 (not implemented yet)
+- `extractExternCallSpecs` currently flattens NVMMAShared encodings to raw
+  offset bases via `nvmmaSharedToLinearLayout` — the swizzle-atom parameters
+  (swizzle_byte_width, transposed, element_bit_width) are lost, so wgmma
+  descriptors / TMA swizzle modes cannot be reconstructed on the CUDA side.
+- Plan: recover `NVMMASharedLayout` from the raw linear layout (swizzle-atom
+  recognition) rather than adding an encoding-kind channel. Linear-layout
+  algebra (evaluation, row extraction, F2 matrix left-inverse) should be
+  computed **in the compiler and injected** ("open a hole" in codegen), not
+  reimplemented in CUDA C++ templates.
+- tcgen05 introduces TMEM (`TensorMemoryEncodingAttr`) — a separate storage
+  tier outside MemDescType/shared; needs its own spec channel later.
 
 ### Pure-Basis Layout Design (register tensors)
 A distributed layout is a **pure linear map** — fully described by its basis

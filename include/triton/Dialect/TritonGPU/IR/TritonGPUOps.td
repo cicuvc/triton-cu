@@ -784,7 +784,8 @@ def TTG_BarrierOp : TTG_Op<"barrier"> {
 }
 
 def TTG_ExternCallOp : TTG_Op<"extern_call", [
-    SameVariadicOperandSize
+    SameVariadicOperandSize,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let summary = "call an external CUDA C++ __device__ function";
   let description = [{

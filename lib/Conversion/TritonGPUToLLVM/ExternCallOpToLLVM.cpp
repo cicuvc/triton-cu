@@ -237,7 +237,9 @@ struct ExternCallOpConversion
           if (auto fAttr = dyn_cast<FloatAttr>(valAttr)) {
             constant = b.f32_val(fAttr.getValueAsDouble());
           } else if (auto iAttr = dyn_cast<IntegerAttr>(valAttr)) {
-            constant = b.i32_val(iAttr.getInt());
+            // Honor the declared bit width (i1/i32/i64, e.g. pointer args).
+            constant = b.int_val(scalarTy.getIntOrFloatBitWidth(),
+                                 iAttr.getInt());
           } else {
             constant = b.f32_val(0.0f);
           }

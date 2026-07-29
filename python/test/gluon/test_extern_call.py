@@ -389,3 +389,152 @@ def test_swizzle_round_trip(offset_bases, block_bases, label):
         f"L-01 LANDMINE [{label}]: Expected ld.shared or st.shared in PTX "
         f"but found neither. First 200 chars:\n{ptx[:200]}"
     )
+
+
+# ==================== WIDTH EXTENSION: b8/b16/vector/ldmatrix/cp.async ====================
+
+
+@gluon.jit
+def shared_width_kernel(x_ptr, out_ptr, FACTOR: gl.constexpr,
+                        DTYPE: gl.constexpr, USE_VECTOR: gl.constexpr):
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [1], [0])
+    shared_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[1], [2], [4], [8], [16], [32], [64], [128]],
+        block_bases=[], alignment=16)
+    idx = gl.arange(0, 256, layout=layout)
+    vals = gl.load(x_ptr + idx)
+    shm = gl.allocate_shared_memory(DTYPE, [256], shared_layout)
+    gl.call("python/test/gluon/tt_plugin.cu", "write_vals_1d", shm, vals,
+            result_layout=[])
+    gl.barrier()
+    if USE_VECTOR:
+        gl.call("python/test/gluon/tt_plugin.cu", "vector_scale_1d", shm,
+                FACTOR, result_layout=[])
+    else:
+        gl.call("python/test/gluon/tt_plugin.cu", "scale_shared_1d", shm,
+                FACTOR, result_layout=[])
+    gl.barrier()
+    result = shm.load(layout)
+    gl.store(out_ptr + idx, result)
+
+
+def test_shared_fp16_b16():
+    """fp16 scalar shared accesses exercise the b16 ld.shared/st.shared path."""
+    torch.set_default_device('cuda')
+    x = torch.randn((256,), dtype=torch.float16)
+    out = torch.empty_like(x)
+    compiled = shared_width_kernel[(1,)](x, out, 2.0, gl.float16, False,
+                                         num_warps=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x * 2.0)
+
+
+def test_shared_int8_b8():
+    """int8 scalar shared accesses exercise the b8 ld.shared/st.shared path."""
+    torch.set_default_device('cuda')
+    x = torch.randint(-10, 10, (256,), dtype=torch.int8)
+    out = torch.empty_like(x)
+    shared_width_kernel[(1,)](x, out, 2.0, gl.int8, False, num_warps=1)
+    torch.cuda.synchronize()
+    assert torch.equal(out, x * 2)
+
+
+def test_shared_vector_fp16():
+    """16-byte vector accesses via loadVector/storeVector."""
+    torch.set_default_device('cuda')
+    x = torch.randn((256,), dtype=torch.float16)
+    out = torch.empty_like(x)
+    shared_width_kernel[(1,)](x, out, 3.0, gl.float16, True, num_warps=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x * 3.0)
+
+
+@gluon.jit
+def ldmatrix_kernel(x_ptr, out_ptr):
+    tile_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[0, 1], [0, 2], [0, 4], [0, 8], [1, 0], [2, 0], [4, 0],
+                       [8, 0]],
+        block_bases=[], alignment=16)
+    frag_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[0, 1], [0, 2], [1, 0], [2, 0], [4, 0], [8, 0], [16, 0]],
+        block_bases=[], alignment=16)
+    dist_2d: gl.constexpr = gl.BlockedLayout([1, 1], [16, 2], [1, 1], [1, 0])
+    frag_dist: gl.constexpr = gl.BlockedLayout([1, 1], [32, 1], [1, 1], [1, 0])
+
+    offs_m = gl.arange(0, 16, layout=gl.SliceLayout(1, dist_2d))[:, None]
+    offs_n = gl.arange(0, 16, layout=gl.SliceLayout(0, dist_2d))[None, :]
+    x = gl.load(x_ptr + offs_m * 16 + offs_n)
+
+    shm_tile = gl.allocate_shared_memory(gl.float16, [16, 16], tile_layout)
+    shm_tile.store(x)
+    gl.barrier()
+    shm_frag = gl.allocate_shared_memory(gl.int32, [32, 4], frag_layout)
+    gl.call("python/test/gluon/tt_plugin.cu", "ldmatrix_dump_frag", shm_tile,
+            shm_frag, result_layout=[])
+    gl.barrier()
+    frag = shm_frag.load(frag_dist)
+    offs_f_m = gl.arange(0, 32, layout=gl.SliceLayout(1, frag_dist))[:, None]
+    offs_f_n = gl.arange(0, 4, layout=gl.SliceLayout(0, frag_dist))[None, :]
+    gl.store(out_ptr + offs_f_m * 4 + offs_f_n, frag)
+
+
+def test_ldmatrix_fp16():
+    """ldmatrix.x4 fragment dump verified against the PTX fragment layout.
+
+    ldmatrix_x4_b16 lane mapping (tt_plugin.cu): matrix m = lane/8,
+    row = lane%8 with blocks m0=(r0-7,c0-7), m1=(r8-15,c0-7),
+    m2=(r0-7,c8-15), m3=(r8-15,c8-15). After the load, lane l's out[i]
+    holds matrix i's row (l/4), u32 column (l%4) — two adjacent b16
+    elements, low half at the smaller column index.
+    """
+    torch.set_default_device('cuda')
+    x = torch.randn((16, 16), dtype=torch.float16)
+    out = torch.empty((32, 4), dtype=torch.int32)
+    compiled = ldmatrix_kernel[(1,)](x, out, num_warps=1)
+    torch.cuda.synchronize()
+
+    xbits = x.view(torch.int16).to(torch.int32) & 0xFFFF
+    expected = torch.zeros((32, 4), dtype=torch.int32)
+    for lane in range(32):
+        r, cu32 = lane // 4, lane % 4
+        for i in range(4):
+            gr = r + (i % 2) * 8
+            gc = cu32 * 2 + (i // 2) * 8
+            expected[lane, i] = xbits[gr, gc] | (xbits[gr, gc + 1] << 16)
+    assert torch.equal(out, expected), (
+        f"ldmatrix fragment mismatch:\nout={out}\nexpected={expected}")
+
+    # D-31: verify the ldmatrix instruction actually made it into PTX.
+    ptx = compiled.asm["ptx"]
+    assert "ldmatrix.sync.aligned.m8n8.x4.shared.b16" in ptx, (
+        f"Expected ldmatrix.x4 in PTX but not found. First 200 chars:\n{ptx[:200]}")
+
+
+@gluon.jit
+def cp_async_kernel(out_ptr, X_ADDR: gl.constexpr):
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [1], [0])
+    shared_layout: gl.constexpr = gl.SharedLinearLayout(
+        offset_bases=[[1], [2], [4], [8], [16], [32], [64], [128]],
+        block_bases=[], alignment=16)
+    shm = gl.allocate_shared_memory(gl.float16, [256], shared_layout)
+    gl.call("python/test/gluon/tt_plugin.cu", "cp_async_fill_1d", shm, X_ADDR,
+            result_layout=[])
+    gl.barrier()
+    result = shm.load(layout)
+    idx = gl.arange(0, 256, layout=layout)
+    gl.store(out_ptr + idx, result)
+
+
+def test_cp_async_fill():
+    """cp.async 16B global→shared per thread; pointer passed as i64 scalar."""
+    torch.set_default_device('cuda')
+    x = torch.randn((256,), dtype=torch.float16)
+    out = torch.empty_like(x)
+    compiled = cp_async_kernel[(1,)](out, x.data_ptr(), num_warps=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x)
+
+    # Verify cp.async actually made it into PTX.
+    ptx = compiled.asm["ptx"]
+    assert "cp.async.cg.shared.global" in ptx, (
+        f"Expected cp.async.cg in PTX but not found. First 200 chars:\n{ptx[:200]}")

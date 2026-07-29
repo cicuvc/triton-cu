@@ -1132,6 +1132,75 @@ CUDACompiler::LookupFunctionWithPlaceholderFallback(
   return Result;
 }
 
+// ============================================================
+// Forbidden synchronization primitive check
+// ============================================================
+// gl.call device functions must not contain CUDA synchronization or fence
+// primitives (__syncthreads, __barrier_sync, __threadfence*): once the
+// device bitcode is inlined into the Triton kernel, MLIR has no model of
+// such a synchronization point (and under warp specialization / divergent
+// control flow it can deadlock). Reject them at instantiation time.
+
+static const char *matchForbiddenSyncBuiltin(const clang::CallExpr *E) {
+  const clang::FunctionDecl *callee = E->getDirectCallee();
+  if (!callee)
+    return nullptr;
+  auto name = callee->getName();
+  static constexpr const char *kForbidden[] = {
+      "__syncthreads",      "__syncthreads_count", "__syncthreads_and",
+      "__syncthreads_or",   "__barrier_sync",      "__barrier_sync_count",
+      "__threadfence",      "__threadfence_block", "__threadfence_system",
+  };
+  for (auto *f : kForbidden)
+    if (name == f)
+      return f;
+  return nullptr;
+}
+
+// DFS over FD's body, following direct calls into same-TU functions that
+// have bodies (visited set guards recursion). Known limitation: callees
+// whose template bodies are not yet instantiated are not followed.
+static const char *containsForbiddenSync(clang::FunctionDecl *FD) {
+  llvm::SmallVector<clang::FunctionDecl *, 8> worklist{FD};
+  llvm::SmallPtrSet<clang::FunctionDecl *, 8> visited;
+  while (!worklist.empty()) {
+    auto *cur = worklist.pop_back_val();
+    if (!cur || !visited.insert(cur).second)
+      continue;
+    clang::Stmt *body = cur->getBody();
+    if (!body)
+      continue;
+    llvm::SmallVector<clang::Stmt *, 32> stack{body};
+    while (!stack.empty()) {
+      clang::Stmt *S = stack.pop_back_val();
+      if (auto *E = llvm::dyn_cast<clang::CallExpr>(S)) {
+        if (auto *name = matchForbiddenSyncBuiltin(E))
+          return name;
+        if (auto *callee = E->getDirectCallee())
+          if (!visited.count(callee))
+            worklist.push_back(callee);
+      }
+      for (auto *child : S->children())
+        if (child)
+          stack.push_back(child);
+    }
+  }
+  return nullptr;
+}
+
+std::string CUDACompiler::CheckForbiddenSync(clang::FunctionDecl *FD) {
+  std::string result;
+  TaskQueue.emplace([&](TensorTypeHelpers &, CustomAstConsumer &) {
+    if (auto *bad = containsForbiddenSync(FD))
+      result = "gl.call device function '" + FD->getNameAsString() +
+               "' uses forbidden synchronization primitive '" + bad +
+               "' — MLIR cannot model CUDA-internal synchronization points "
+               "in extern calls";
+  });
+  InvocationContext->SwitchTo(*CompileExecutionContext);
+  return result;
+}
+
 llvm::Function *
 CUDACompiler::InstantiationFunction(clang::FunctionDecl *FD) {
   llvm::Function *Result;
@@ -1334,6 +1403,9 @@ CUDACompiler::compileBitcode(
 
   // Phase 2: Codegen for all resolved functions
   for (size_t i = 0; i < resolvedFDs.size(); ++i) {
+    if (auto syncErr = this->CheckForbiddenSync(resolvedFDs[i]);
+        !syncErr.empty())
+      return {"", syncErr, {}};
     auto *fn = this->InstantiationFunction(resolvedFDs[i]);
     if (!fn)
       return {"", "Instantiation failed for " + requests[i].Symbol,
@@ -1719,6 +1791,7 @@ std::string tritonPatchExternCallResultTypes(
     if (name == "f32")  return Float32Type::get(ctx);
     if (name == "f16")  return Float16Type::get(ctx);
     if (name == "bf16") return BFloat16Type::get(ctx);
+    if (name == "i8")   return IntegerType::get(ctx, 8);
     if (name == "i32")  return IntegerType::get(ctx, 32);
     if (name == "i64")  return IntegerType::get(ctx, 64);
     return Float32Type::get(ctx);
@@ -1814,12 +1887,15 @@ std::string tritonPatchExternCallResultTypes(
 
     OpBuilder builder(op);
     ImplicitLocOpBuilder ib(op.getLoc(), builder);
+    // Preserve scalar-arg attributes — dropping them would silently lose
+    // interleaved scalar constants (e.g. i64 pointer args) for patched ops.
     auto newOp = triton::gpu::ExternCallOp::create(
         ib, newResultTypes, op.getInputs(),
         op.getSymbol(), op.getLibpath(), op.getAssertNoConv(),
         op.getUseFastMath(),
-        /*scalar_arg_kinds=*/nullptr, /*scalar_types=*/nullptr,
-        /*scalar_values=*/nullptr);
+        op->getAttrOfType<DenseI32ArrayAttr>("scalar_arg_kinds"),
+        op->getAttrOfType<ArrayAttr>("scalar_types"),
+        op->getAttrOfType<ArrayAttr>("scalar_values"));
 
     for (unsigned i = 0; i < numResults; i++) {
       auto declaredType =
@@ -1931,6 +2007,9 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
 
   // Phase 2: Codegen for all resolved functions
   for (size_t i = 0; i < resolvedFDs.size(); ++i) {
+    if (auto syncErr = compiler.CheckForbiddenSync(resolvedFDs[i]);
+        !syncErr.empty())
+      return {"", syncErr, {}};
     auto *fn = compiler.InstantiationFunction(resolvedFDs[i]);
     if (!fn)
       return {"", "Instantiation failed for " + requests[i].Symbol,

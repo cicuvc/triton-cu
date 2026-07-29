@@ -944,6 +944,7 @@ void init_triton_llvm(py::module &&m) {
 
   // Types for CUDA in-process compilation
   py::enum_<ScalarType>(m, "ScalarType")
+      .value("Int8", ScalarType::Int8)
       .value("Int32", ScalarType::Int32)
       .value("UInt32", ScalarType::UInt32)
       .value("UInt64", ScalarType::UInt64)

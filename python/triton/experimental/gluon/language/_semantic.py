@@ -307,7 +307,7 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                     if isinstance(val, bool):
                         dtype = "i1"
                     elif isinstance(val, int):
-                        dtype = "i32"
+                        dtype = "i32" if -(2**31) <= val < 2**31 else "i64"
                     else:
                         dtype = "f32"
                     arg_params.append({"dtype": dtype, "scalar": dtype})
@@ -328,7 +328,8 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                 scalar_name, result_shape = inferred_results[i]
                 _scalar_to_dtype = {
                     "f32": ttgl.float32, "f16": ttgl.float16,
-                    "bf16": ttgl.bfloat16, "i32": ttgl.int32, "i64": ttgl.int64,
+                    "bf16": ttgl.bfloat16, "i8": ttgl.int8,
+                    "i32": ttgl.int32, "i64": ttgl.int64,
                 }
                 inferred_dtype = _scalar_to_dtype.get(scalar_name, ttgl.float32)
             else:
@@ -355,7 +356,7 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             if isinstance(v, bool):
                 scalar_type_names.append("i1")
             elif isinstance(v, int):
-                scalar_type_names.append("i32")
+                scalar_type_names.append("i32" if -(2**31) <= v < 2**31 else "i64")
             else:
                 scalar_type_names.append("f32")
             scalar_values.append(v)

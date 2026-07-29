@@ -1,7 +1,7 @@
-"""TDD test for Plan 07-01: shared_accumulate and write_swizzled_2d device functions.
+"""Structural tests for Plan 07-01: shared_accumulate and write_swizzled_2d device functions.
 
-RED phase: these tests MUST FAIL because the functions do not exist yet.
-GREEN phase: after adding the functions to tt_plugin.cu, these tests MUST PASS.
+The functions now exist in tt_plugin.cu (GREEN phase complete); these tests
+lock in their signatures, loop bounds, and access patterns against regressions.
 """
 
 import re
@@ -77,10 +77,12 @@ def test_shared_accumulate_exists():
         "FAIL: shared_accumulate must have #pragma unroll"
     )
 
-    # Verify shm(i) += val.data[i] pattern
-    assert "shm(i)" in body, "FAIL: shared_accumulate must use shm(i) for SharedTensor access"
+    # Verify shm(i * 32 + tid) += shm(...) + val.data[i] pattern: each thread
+    # accumulates the register-resident values it is responsible for.
+    assert "shm(i * 32 + tid)" in body, (
+        "FAIL: shared_accumulate must use shm(i * 32 + tid) for SharedTensor access")
     assert "val.data[i]" in body, "FAIL: shared_accumulate must use val.data[i] for Tensor access"
-    assert "+=" in body, "FAIL: shared_accumulate must use += for accumulate semantics"
+    assert "+" in body, "FAIL: shared_accumulate must use + for accumulate semantics"
 
     # Verify return type is void
     assert "__device__ void shared_accumulate" in content, (

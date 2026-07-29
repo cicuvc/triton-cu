@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <bit>
+#include <cassert>
 #include <initializer_list>
 #include <utility>
 #include <algorithm>
@@ -219,25 +220,100 @@ struct shared_accessor{
     uint32_t __shared_memory_base;
 
     __forceinline__ __device__ T load() const {
-        if constexpr(sizeof(T) == 4){
+        if constexpr(sizeof(T) == 1){
+            uint16_t data;
+            asm volatile("ld.shared.b8 %0, [%1];\n":"=h"(data):"r"(__shared_memory_base):"memory");
+            uint8_t raw = static_cast<uint8_t>(data);
+            return std::bit_cast<T>(raw);
+        } else if constexpr(sizeof(T) == 2){
+            uint16_t data;
+            asm volatile("ld.shared.b16 %0, [%1];\n":"=h"(data):"r"(__shared_memory_base):"memory");
+            return std::bit_cast<T>(data);
+        } else if constexpr(sizeof(T) == 4){
             uint32_t data;
             asm volatile("ld.shared.b32 %0, [%1];\n":"=r"(data):"r"(__shared_memory_base):"memory");
             return std::bit_cast<T>(data);
+        } else if constexpr(sizeof(T) == 8){
+            uint64_t data;
+            asm volatile("ld.shared.b64 %0, [%1];\n":"=l"(data):"r"(__shared_memory_base):"memory");
+            return std::bit_cast<T>(data);
         } else {
-            return T{}; // not implemented
+            static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8,
+                          "shared_accessor: element width must be 1, 2, 4 or 8 bytes");
         }
     }
 
     __forceinline__ __device__ void store(const T& data) {
-        if constexpr(sizeof(T) == 4){
+        if constexpr(sizeof(T) == 1){
+            uint16_t data_u16 = static_cast<uint8_t>(std::bit_cast<uint8_t>(data));
+            asm volatile("st.shared.b8 [%1], %0;\n"::"h"(data_u16),"r"(__shared_memory_base):"memory");
+        } else if constexpr(sizeof(T) == 2){
+            uint16_t data_u16 = std::bit_cast<uint16_t>(data);
+            asm volatile("st.shared.b16 [%1], %0;\n"::"h"(data_u16),"r"(__shared_memory_base):"memory");
+        } else if constexpr(sizeof(T) == 4){
             uint32_t data_u32 = std::bit_cast<uint32_t>(data);
             asm volatile("st.shared.b32 [%1], %0;\n"::"r"(data_u32),"r"(__shared_memory_base):"memory");
+        } else if constexpr(sizeof(T) == 8){
+            uint64_t data_u64 = std::bit_cast<uint64_t>(data);
+            asm volatile("st.shared.b64 [%1], %0;\n"::"l"(data_u64),"r"(__shared_memory_base):"memory");
         }
     }
 
     __device__ __forceinline__ operator T() const { return load(); }
     __device__ __forceinline__ T operator =(const T& value) { store(value); return value; }
 };
+
+// Vectorized shared-memory primitives: N_ELEMS*sizeof(T) ∈ {4, 8, 16} bytes
+// mapped to b32 / v2.b32 / v4.b32 accesses. The caller guarantees natural
+// alignment (checked via __trap) and element contiguity (debug assert).
+template<typename T, uint32_t N_ELEMS>
+__forceinline__ __device__ void shared_load_vector(uint32_t byteAddr, T (&out)[N_ELEMS]) {
+    constexpr uint32_t N_BYTES = N_ELEMS * sizeof(T);
+    static_assert(N_BYTES == 4 || N_BYTES == 8 || N_BYTES == 16,
+                  "shared_load_vector: width must be 4, 8 or 16 bytes");
+    constexpr uint32_t N_U32 = N_BYTES / 4;
+    uint32_t words[N_U32];
+    if constexpr (N_U32 == 1) {
+        asm volatile("ld.shared.b32 %0, [%1];\n":"=r"(words[0]):"r"(byteAddr):"memory");
+    } else if constexpr (N_U32 == 2) {
+        asm volatile("ld.shared.v2.b32 {%0, %1}, [%2];\n":"=r"(words[0]),"=r"(words[1]):"r"(byteAddr):"memory");
+    } else {
+        asm volatile("ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];\n":"=r"(words[0]),"=r"(words[1]),"=r"(words[2]),"=r"(words[3]):"r"(byteAddr):"memory");
+    }
+    __builtin_memcpy(out, words, N_BYTES);
+}
+
+template<typename T, uint32_t N_ELEMS>
+__forceinline__ __device__ void shared_store_vector(uint32_t byteAddr, const T (&in)[N_ELEMS]) {
+    constexpr uint32_t N_BYTES = N_ELEMS * sizeof(T);
+    static_assert(N_BYTES == 4 || N_BYTES == 8 || N_BYTES == 16,
+                  "shared_store_vector: width must be 4, 8 or 16 bytes");
+    constexpr uint32_t N_U32 = N_BYTES / 4;
+    uint32_t words[N_U32];
+    __builtin_memcpy(words, in, N_BYTES);
+    if constexpr (N_U32 == 1) {
+        asm volatile("st.shared.b32 [%1], %0;\n"::"r"(words[0]),"r"(byteAddr):"memory");
+    } else if constexpr (N_U32 == 2) {
+        asm volatile("st.shared.v2.b32 [%2], {%0, %1};\n"::"r"(words[0]),"r"(words[1]),"r"(byteAddr):"memory");
+    } else {
+        asm volatile("st.shared.v4.b32 [%4], {%0, %1, %2, %3};\n"::"r"(words[0]),"r"(words[1]),"r"(words[2]),"r"(words[3]),"r"(byteAddr):"memory");
+    }
+}
+
+// cp.async primitives (global → shared, 4/8/16 bytes per thread).
+__forceinline__ __device__ void cp_async_ca(uint32_t dstShared, const void* srcGlobal, uint32_t nBytes) {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], %2;\n"::"r"(dstShared),"l"(srcGlobal),"r"(nBytes):"memory");
+}
+__forceinline__ __device__ void cp_async_cg_16(uint32_t dstShared, const void* srcGlobal) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n"::"r"(dstShared),"l"(srcGlobal):"memory");
+}
+__forceinline__ __device__ void cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n":::"memory");
+}
+template<uint32_t N>
+__forceinline__ __device__ void cp_async_wait() {
+    asm volatile("cp.async.wait_group %0;\n"::"n"(N):"memory");
+}
 
 // SharedTensor: aliases external shared memory (D-03).
 // T data[] is a zero-length array — lowers to ptr addrspace(3) in Phase 6.
@@ -250,39 +326,117 @@ struct SharedTensor {
                                  // This struct is never allocated — it solely
                                  // aliases external shared memory through data[].
 
-    // D-04: variadic operator() accepting RANK logical indices, returning T&.
-    // Flattening convention: row-major (outer dim first, inner dim varies fastest).
-    // For Shape<D0> (Rank 1): flatIndex = indices[0]
-    // For Shape<D0, D1> (Rank 2): flatIndex = indices[0] * D1 + indices[1]
-    __device__ __forceinline__ shared_accessor<T> operator()(auto... indices) {
-        static_assert(sizeof...(indices) == TShape::RANK, "number of indices must match tensor rank");
-        constexpr auto& dims = ShapeDims<TShape>::All;
-        uint32_t idxs[TShape::RANK] = {static_cast<uint32_t>(indices)...};
+    static constexpr uint32_t RANK = TShape::RANK;
 
-        // Row-major flatten: flatIndex = sum(indices[k] * stride[k])
+    // Row-major flatten of logical indices into a flat element index:
+    // flatIndex = sum(indices[k] * stride[k]), inner dim varies fastest.
+    static constexpr uint32_t flattenCoords(const uint32_t (&idxs)[RANK]) {
+        constexpr auto& dims = ShapeDims<TShape>::All;
         uint32_t flatIndex = 0;
-        #pragma unroll
-        for (int d = 0; d < TShape::RANK; ++d) {
+        for (int d = 0; d < RANK; ++d) {
             uint32_t stride = 1;
-            for (int k = d + 1; k < TShape::RANK; ++k)
+            for (int k = d + 1; k < RANK; ++k)
                 stride *= dims[k];
             flatIndex += idxs[d] * stride;
         }
+        return flatIndex;
+    }
 
-        auto logicalOffset = TLayout::evaluate(flatIndex, IntTuple<TShape::RANK>{});
-        // Convert logical offset to 1D byte offset: dot(logicalOffset, byteStrides)
-        // where byteStrides[k] = product(dims[k+1..N-1]) * sizeof(T)
+    // Byte offset of the element at flatIndex:
+    // dot(TLayout::evaluate(flatIndex), row-major byte strides).
+    static constexpr uint32_t byteOffsetOf(uint32_t flatIndex) {
+        constexpr auto& dims = ShapeDims<TShape>::All;
+        auto logicalOffset = TLayout::evaluate(flatIndex, IntTuple<RANK>{});
         uint32_t byteOffset = 0;
-        #pragma unroll
-        for (int d = 0; d < TShape::RANK; ++d) {
+        for (int d = 0; d < RANK; ++d) {
             uint32_t byteStride = sizeof(T);
-            for (int k = d + 1; k < TShape::RANK; ++k)
+            for (int k = d + 1; k < RANK; ++k)
                 byteStride *= dims[k];
             byteOffset += logicalOffset.Dims[d] * byteStride;
         }
-        return shared_accessor<T>{__shared_memory_base + byteOffset };
+        return byteOffset;
+    }
+
+    // Debug contiguity check: the N_ELEMS elements starting at flatBase must
+    // have consecutive byte offsets with stride sizeof(T).
+    template<uint32_t N_ELEMS>
+    static constexpr bool isContiguous(uint32_t flatBase) {
+        uint32_t base = byteOffsetOf(flatBase);
+        for (uint32_t k = 1; k < N_ELEMS; ++k)
+            if (byteOffsetOf(flatBase + k) != base + k * sizeof(T))
+                return false;
+        return true;
+    }
+
+    // D-04: variadic operator() accepting RANK logical indices, returning T&.
+    __device__ __forceinline__ shared_accessor<T> operator()(auto... indices) {
+        static_assert(sizeof...(indices) == RANK, "number of indices must match tensor rank");
+        uint32_t idxs[RANK] = {static_cast<uint32_t>(indices)...};
+        return shared_accessor<T>{__shared_memory_base + byteOffsetOf(flattenCoords(idxs))};
+    }
+
+    // Vector access at flat element index flatBase.
+    template<uint32_t N_ELEMS>
+    __device__ __forceinline__ void loadVector(uint32_t flatBase, T (&out)[N_ELEMS]) const {
+        constexpr uint32_t N_BYTES = N_ELEMS * sizeof(T);
+        uint32_t base = byteOffsetOf(flatBase);
+        if (base % N_BYTES != 0) __trap();  // misaligned vector access
+        assert(isContiguous<N_ELEMS>(flatBase) && "loadVector: elements not contiguous");
+        shared_load_vector<T, N_ELEMS>(__shared_memory_base + base, out);
+    }
+
+    template<uint32_t N_ELEMS>
+    __device__ __forceinline__ void storeVector(uint32_t flatBase, const T (&in)[N_ELEMS]) {
+        constexpr uint32_t N_BYTES = N_ELEMS * sizeof(T);
+        uint32_t base = byteOffsetOf(flatBase);
+        if (base % N_BYTES != 0) __trap();  // misaligned vector access
+        assert(isContiguous<N_ELEMS>(flatBase) && "storeVector: elements not contiguous");
+        shared_store_vector<T, N_ELEMS>(__shared_memory_base + base, in);
+    }
+
+    // Asynchronous global→shared copy of N_ELEMS elements (4/8/16 bytes).
+    // gsrc must point to N_ELEMS consecutive elements in global memory.
+    template<uint32_t N_ELEMS>
+    __device__ __forceinline__ void cpAsyncFromGlobal(const T* gsrc, uint32_t flatBase) {
+        constexpr uint32_t N_BYTES = N_ELEMS * sizeof(T);
+        static_assert(N_BYTES == 4 || N_BYTES == 8 || N_BYTES == 16,
+                      "cp.async supports 4, 8 or 16 bytes per thread");
+        uint32_t base = byteOffsetOf(flatBase);
+        if (base % N_BYTES != 0) __trap();  // misaligned cp.async destination
+        assert(isContiguous<N_ELEMS>(flatBase) && "cpAsyncFromGlobal: elements not contiguous");
+        if constexpr (N_BYTES == 16) {
+            cp_async_cg_16(__shared_memory_base + base, gsrc);
+        } else {
+            cp_async_ca(__shared_memory_base + base, gsrc, N_BYTES);
+        }
     }
 };
+
+// ldmatrix.sync.aligned.m8n8.x4.shared.b16 — loads four 8x8 b16 matrices
+// (a 16x16 tile of 2-byte elements). Lane l supplies the row address:
+//   matrix m = l / 8, row = l % 8; matrices are blocked as
+//   m0=(rows 0-7, cols 0-7), m1=(rows 8-15, cols 0-7),
+//   m2=(rows 0-7, cols 8-15), m3=(rows 8-15, cols 8-15).
+// After the load, lane l's out[i] holds matrix i's row (l/4), u32 column
+// (l%4) — i.e. two adjacent b16 elements, matching the mma fragment layout.
+// fragBase is the logical coordinate of the tile's top-left element.
+template<typename T, typename TShape, typename TLayout>
+__device__ __forceinline__ void ldmatrix_x4_b16(
+    const SharedTensor<T, TShape, TLayout>& shm,
+    IntTuple<TShape::RANK> fragBase, uint32_t (&out)[4]) {
+    static_assert(sizeof(T) == 2, "ldmatrix_x4_b16 requires 2-byte elements");
+    static_assert(TShape::RANK == 2, "ldmatrix tile must be rank 2");
+    uint32_t lane = threadIdx.x & 31;
+    uint32_t mat = lane >> 3, row = lane & 7;
+    uint32_t idxs[2] = {fragBase.Dims[0] + row + (mat & 1) * 8,
+                        fragBase.Dims[1] + (mat >> 1) * 8};
+    uint32_t addr = shm.__shared_memory_base +
+                    SharedTensor<T, TShape, TLayout>::byteOffsetOf(
+                        SharedTensor<T, TShape, TLayout>::flattenCoords(idxs));
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
+                 : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3])
+                 : "r"(addr) : "memory");
+}
 
 // Test device functions (D-05 exercise) — consumed by Plan 04-03 pytest harness.
 
@@ -317,6 +471,76 @@ __device__ void write_swizzled_2d(SharedTensor<T, Shape<32, 16>, TLayout>& shm) 
 }
 
 // ========================= END OF DEFINITIONS =============================
+
+// write_vals_1d: shm(i*32+tid) = vals.data[i] — scalar stores at the
+// element width (b16 for half, b8 for int8).
+template<typename T, uint32_t N, typename SharedTLayout, typename TLayout>
+__device__ void write_vals_1d(
+    SharedTensor<T, Shape<N>, SharedTLayout>& shm,
+    const Tensor<T, Shape<N>, TLayout>& vals)
+{
+    uint32_t tid = threadIdx.x;
+    #pragma unroll TLayout::REG_SIZE
+    for (uint32_t i = 0; i < TLayout::REG_SIZE; i++)
+        shm(i * 32 + tid) = vals.data[i];
+}
+
+// scale_shared_1d: shm(i) = shm(i) * factor — load+store round-trip at the
+// element width (exercises b8/b16 ld.shared/st.shared). F is deduced from
+// the gl.call scalar arg (f32), so arithmetic goes through float.
+template<typename T, uint32_t N, typename TLayout, typename F>
+__device__ void scale_shared_1d(SharedTensor<T, Shape<N>, TLayout>& shm, F factor) {
+    for (uint32_t i = 0; i < N; i++)
+        shm(i) = static_cast<T>(static_cast<float>(shm(i)) * static_cast<float>(factor));
+}
+
+// vector_scale_1d: same as scale_shared_1d but through 16-byte vector
+// accesses (loadVector/storeVector).
+template<typename T, uint32_t N, typename TLayout, typename F>
+__device__ void vector_scale_1d(SharedTensor<T, Shape<N>, TLayout>& shm, F factor) {
+    constexpr uint32_t VEC = 16 / sizeof(T);
+    static_assert(N % VEC == 0, "vector width must divide N");
+    for (uint32_t base = 0; base < N; base += VEC) {
+        T vals[VEC];
+        shm.template loadVector<VEC>(base, vals);
+        #pragma unroll
+        for (uint32_t i = 0; i < VEC; i++)
+            vals[i] = static_cast<T>(static_cast<float>(vals[i]) * static_cast<float>(factor));
+        shm.template storeVector<VEC>(base, vals);
+    }
+}
+
+// ldmatrix_dump_frag: reads the 16x16 fp16 tile via ldmatrix.x4 and dumps
+// each lane's four u32 fragment registers to shmFrag(lane, i) for host-side
+// verification against the ldmatrix fragment layout definition. TFrag is
+// deduced (int32 on the gluon side — MLIR "i32" is signless).
+template<typename T, typename TFrag, typename TLayoutA, typename TLayoutB>
+__device__ void ldmatrix_dump_frag(
+    SharedTensor<T, Shape<16, 16>, TLayoutA>& shmTile,
+    SharedTensor<TFrag, Shape<32, 4>, TLayoutB>& shmFrag)
+{
+    uint32_t out[4];
+    ldmatrix_x4_b16(shmTile, IntTuple<2>{0, 0}, out);
+    uint32_t lane = threadIdx.x & 31;
+    #pragma unroll
+    for (int i = 0; i < 4; i++)
+        shmFrag(lane, i) = static_cast<TFrag>(out[i]);
+}
+
+// cp_async_fill_1d: each thread cp.asyncs one 16-byte chunk from global
+// memory into its slot of the shared tensor. gsrcAddr is the global source
+// address passed as an i64 scalar (pointer-to-int on the gluon side).
+template<typename T, uint32_t N, typename TLayout>
+__device__ void cp_async_fill_1d(SharedTensor<T, Shape<N>, TLayout>& shm,
+                                 unsigned long long gsrcAddr) {
+    constexpr uint32_t VEC = 16 / sizeof(T);
+    static_assert(N == 32 * VEC, "one 16-byte chunk per thread");
+    uint32_t tid = threadIdx.x;
+    const T* gsrc = reinterpret_cast<const T*>(gsrcAddr);
+    shm.template cpAsyncFromGlobal<VEC>(gsrc + tid * VEC, tid * VEC);
+    cp_async_commit();
+    cp_async_wait<0>();
+}
 
 template<typename T, uint32_t TILE_WIDTH, typename TLayout>
 __device__ Tensor<T, Shape<TILE_WIDTH>, TLayout> elementwise_add(const Tensor<T, Shape<TILE_WIDTH>, TLayout>& lhs, const Tensor<T, Shape<TILE_WIDTH>, TLayout>& rhs){
