@@ -1,6 +1,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
@@ -257,6 +258,99 @@ public:
   }
 };
 
+// Resolves a named barrier token to its defining alloc op, tracing through
+// warp-specialize partition block arguments (explicit captures).
+static triton::gpu::AllocNamedBarrierOp findNamedBarrierAlloc(Value token) {
+  while (auto blockArg = dyn_cast<BlockArgument>(token)) {
+    auto partitions = dyn_cast<triton::gpu::WarpSpecializePartitionsOp>(
+        blockArg.getOwner()->getParentOp());
+    if (!partitions)
+      return nullptr;
+    token = partitions->getOperand(blockArg.getArgNumber());
+  }
+  return token.getDefiningOp<triton::gpu::AllocNamedBarrierOp>();
+}
+
+// Reads the hardware barrier ID and arrival count backfilled by the named
+// barrier allocation pass onto the token's defining alloc op.
+static std::pair<int, int> getNamedBarrierIdAndCount(Value token,
+                                                     Operation *useOp) {
+  auto alloc = findNamedBarrierAlloc(token);
+  if (!alloc) {
+    useOp->emitError("named barrier token is not defined by "
+                     "ttg.alloc_named_barrier");
+    return {0, 0};
+  }
+  auto idAttr = alloc.getBarrierIdAttr();
+  auto countAttr = alloc.getCountAttr();
+  if (!idAttr || !countAttr) {
+    useOp->emitError("named barrier has no assigned barrier_id/count; the "
+                     "triton-nvidia-gpu-allocate-named-barriers pass must run "
+                     "before lowering");
+    return {0, 0};
+  }
+  return {static_cast<int>(idAttr.getInt()),
+          static_cast<int>(countAttr.getInt())};
+}
+
+class AllocNamedBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::AllocNamedBarrierOp> {
+public:
+  AllocNamedBarrierOpConversion(const LLVMTypeConverter &converter,
+                                PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::AllocNamedBarrierOp>(converter,
+                                                                 benefit) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::AllocNamedBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // No runtime code — the barrier resource only exists as attributes on
+    // this op. Replace the token with a dummy i32 for any leftover uses
+    // (none should remain after sync/arrive/extern_call lowerings).
+    auto b = TritonLLVMOpBuilder(op.getLoc(), rewriter);
+    rewriter.replaceOp(op, b.i32_val(0));
+    return success();
+  }
+};
+
+class NamedBarrierSyncOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::NamedBarrierSyncOp> {
+public:
+  NamedBarrierSyncOpConversion(const LLVMTypeConverter &converter,
+                               PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::NamedBarrierSyncOp>(converter,
+                                                                benefit) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::NamedBarrierSyncOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto [id, count] = getNamedBarrierIdAndCount(op.getBarrier(), op);
+    auto b = TritonLLVMOpBuilder(op.getLoc(), rewriter);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierOp>(op, b.i32_val(id),
+                                                 b.i32_val(count));
+    return success();
+  }
+};
+
+class NamedBarrierArriveOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::NamedBarrierArriveOp> {
+public:
+  NamedBarrierArriveOpConversion(const LLVMTypeConverter &converter,
+                                 PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::NamedBarrierArriveOp>(converter,
+                                                                  benefit) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::NamedBarrierArriveOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto [id, count] = getNamedBarrierIdAndCount(op.getBarrier(), op);
+    auto b = TritonLLVMOpBuilder(op.getLoc(), rewriter);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierArriveOp>(op, b.i32_val(id),
+                                                       b.i32_val(count));
+    return success();
+  }
+};
+
 struct LocalGatherOpConversion : public ConvertOpToLLVMPattern<LocalGatherOp> {
 public:
   LocalGatherOpConversion(LLVMTypeConverter &typeConverter,
@@ -361,4 +455,7 @@ void mlir::triton::populateMemoryOpToLLVMPatterns(
   patterns.add<LocalScatterOpConversion>(typeConverter, targetInfo, benefit);
   patterns.add<LocalStoreOpConversion>(typeConverter, targetInfo, benefit);
   patterns.add<BarrierOpConversion>(typeConverter, benefit);
+  patterns.add<AllocNamedBarrierOpConversion>(typeConverter, benefit);
+  patterns.add<NamedBarrierSyncOpConversion>(typeConverter, benefit);
+  patterns.add<NamedBarrierArriveOpConversion>(typeConverter, benefit);
 }

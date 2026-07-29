@@ -334,6 +334,10 @@ class InferExternCallResult:
             elif ap.get("scalar") is not None:
                 # Scalar arg — pass as ScalarType for plain T params (e.g. T scale)
                 param_types.append(_scalar_type_for(ap["scalar"]))
+            elif ap.get("named_barrier"):
+                # Type marker only — id/count are compile-time constants
+                # assigned later by the allocation pass.
+                param_types.append(llvm.NamedBarrierParam())
             else:
                 tp = llvm.TensorParameter()
                 tp.type = _scalar_type_for(ap["dtype"])
@@ -637,6 +641,10 @@ class CUDABackend(BaseBackend):
         nvidia.passes.ttgpuir.add_allocate_shared_memory_nv(pm, capability, ptx_version)
         nvidia.passes.ttnvgpuir.add_allocate_tensor_memory(pm)
         nvidia.passes.ttnvgpuir.add_check_matmul_two_cta(pm)
+        # Assign hardware barrier IDs and arrival counts to named barriers.
+        # Must run after allocate_warp_groups (partition structure is final)
+        # and before to_llvmir (ExternCallOpToLLVM reads the attributes).
+        nvidia.passes.ttnvgpuir.add_allocate_named_barriers(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -843,6 +851,8 @@ class CUDABackend(BaseBackend):
                             param_types.append(stp)
                         elif inp.get("scalar") is not None:
                             param_types.append(_scalar_type_for(inp["scalar"]))
+                        elif inp.get("named_barrier"):
+                            param_types.append(llvm.NamedBarrierParam())
                         else:
                             tp = llvm.TensorParameter()
                             tp.type = _scalar_type_for(inp["dtype"])
@@ -886,6 +896,10 @@ class CUDABackend(BaseBackend):
                         stp.alignment = inp.get("alignment", 16)
                         stp.layout_rank = len(inp["shape"])
                         param_types.append(stp)
+                    elif inp.get("scalar") is not None:
+                        param_types.append(_scalar_type_for(inp["scalar"]))
+                    elif inp.get("named_barrier"):
+                        param_types.append(llvm.NamedBarrierParam())
                     else:
                         tp = llvm.TensorParameter()
                         tp.type = _scalar_type_for(inp["dtype"])

@@ -161,6 +161,13 @@ struct SharedTensorParameter {
   SharedLayoutInfo Layout;
 };
 
+// Marker only: the CUDA side receives a `const NamedBarrier&` (a
+// `struct NamedBarrier { int id; int count; }` defined in the device
+// library). The actual id/count values are compile-time constants assigned
+// by the MLIR named barrier allocation pass and materialized during LLVM
+// lowering — nothing needs to flow through this struct.
+struct NamedBarrierParam {};
+
 struct TupleType {
   std::vector<std::variant<std::nullptr_t, TensorParameter,
                            SharedTensorParameter, TupleType>>
@@ -189,7 +196,8 @@ struct LayoutTemplates {
 
 struct CudaFuncRequest {
   std::string Symbol;
-  std::vector<std::variant<ScalarType, TensorParameter, SharedTensorParameter>>
+  std::vector<std::variant<ScalarType, TensorParameter, SharedTensorParameter,
+                           NamedBarrierParam>>
       ParamTypes;
   bool UseFastMath = false;
 };
@@ -261,6 +269,23 @@ inline clang::QualType getQualTypeFromScalarType(clang::ASTContext &Ctx,
     assert(false && "unsupported scalar type");
   }
   __builtin_unreachable();
+}
+
+// Builds `const NamedBarrier&` by looking up the record declared in the
+// parsed device library (e.g. tt_plugin.cu). Returns a null QualType if the
+// struct is not defined there.
+inline clang::QualType getNamedBarrierParamType(clang::ASTContext &Ctx) {
+  auto R =
+      Ctx.getTranslationUnitDecl()->lookup(&Ctx.Idents.get("NamedBarrier"));
+  if (R.empty())
+    return clang::QualType();
+  auto *RD = llvm::dyn_cast<clang::RecordDecl>(*R.begin());
+  if (!RD)
+    return clang::QualType();
+  clang::QualType Ty =
+      Ctx.getTypeDeclType(static_cast<const clang::TypeDecl *>(RD));
+  Ty = Ty.withConst();
+  return Ctx.getLValueReferenceType(Ty);
 }
 
 // ============================================================
@@ -413,7 +438,7 @@ struct CUDACompiler {
   LookupFunctionWithPlaceholderFallback(
       const llvm::StringRef &Name,
       const std::vector<std::variant<ScalarType, TensorParameter,
-                                     SharedTensorParameter>>
+                                     SharedTensorParameter, NamedBarrierParam>>
           &ParamTypes);
 
   std::variant<std::nullptr_t, TensorParameter, SharedTensorParameter,

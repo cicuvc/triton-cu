@@ -252,8 +252,8 @@ class GluonSemantic(TritonSemantic[TensorTy]):
         _check(isinstance(src_path, str), lambda: f"expected 'src_path' to be a str but got {type(src_path)!r}")
         _check(isinstance(func, str), lambda: f"expected 'func' to be a str but got {type(func)!r}")
         for a in args:
-            _check(isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor)),
-                   lambda: f"all arguments must be tensors or shared_memory_descriptors but got {type(a)!r}")
+            _check(isinstance(a, (ttgl.tensor, ttgl.shared_memory_descriptor, ttgl.named_barrier)),
+                   lambda: f"all arguments must be tensors, shared_memory_descriptors or named_barriers but got {type(a)!r}")
         _check(isinstance(result_layouts, list),
                 lambda: f"result_layouts must be a list but got {type(result_layouts)!r}")
         if scalar_args is None:
@@ -288,7 +288,12 @@ class GluonSemantic(TritonSemantic[TensorTy]):
                 if kind == 0:
                     a = args[tensor_idx]
                     tensor_idx += 1
-                    if isinstance(a, ttgl.shared_memory_descriptor):
+                    if isinstance(a, ttgl.named_barrier):
+                        # Type marker only — the CUDA side receives
+                        # `const NamedBarrier&`; id/count are compile-time
+                        # constants assigned by the allocation pass.
+                        arg_params.append({"named_barrier": True})
+                    elif isinstance(a, ttgl.shared_memory_descriptor):
                         arg_params.append({
                             "dtype": str(a.dtype),
                             "shape": list(a.shape),
@@ -781,6 +786,22 @@ class GluonSemantic(TritonSemantic[TensorTy]):
 
     def num_ctas(self):
         return ttgl.constexpr(self.builder.options.num_ctas)
+
+    def allocate_named_barrier(self, count):
+        _check(count is None or (isinstance(count, int) and count > 0 and count % 32 == 0),
+               lambda: f"named barrier count must be a positive multiple of 32 but got {count!r}")
+        handle = self.builder.create_alloc_named_barrier(count)
+        return ttgl.named_barrier(handle)
+
+    def named_barrier_sync(self, barrier):
+        _check(isinstance(barrier, ttgl.named_barrier),
+               lambda: f"expected a named_barrier but got {type(barrier)!r}")
+        self.builder.create_named_barrier_sync(barrier.handle)
+
+    def named_barrier_arrive(self, barrier):
+        _check(isinstance(barrier, ttgl.named_barrier),
+               lambda: f"expected a named_barrier but got {type(barrier)!r}")
+        self.builder.create_named_barrier_arrive(barrier.handle)
 
     def num_warps(self, generator):
         if generator.caller_context is not None:

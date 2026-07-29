@@ -208,4 +208,23 @@ def TritonNvidiaGPUCheckMatmulTwoCTAPass : Pass<"triton-nvidia-check-matmul-two-
   }];
 }
 
+def TritonNvidiaGPUAllocateNamedBarriersPass : Pass<"triton-nvidia-gpu-allocate-named-barriers", "mlir::ModuleOp"> {
+  let summary = "Assign hardware barrier IDs and arrival counts to named barriers";
+
+  let description = [{
+    Assigns hardware named barrier IDs (2-15, avoiding the default barrier 0
+    and warp-specialization reserved IDs) to `ttg.alloc_named_barrier` ops via
+    liveness-based graph coloring: tokens with disjoint live ranges may share
+    an ID. Also infers the arrival `count` when not explicitly specified: all
+    uses of a token must reside in a single warp group and the count becomes
+    that group's thread count. Cross-warp-group usage or `arrive` usage
+    without an explicit count is a compile-time error. Results are backfilled
+    as `barrier_id`/`count` attributes on the alloc ops.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::gpu::TritonGPUDialect"
+  ];
+}
+
 #endif

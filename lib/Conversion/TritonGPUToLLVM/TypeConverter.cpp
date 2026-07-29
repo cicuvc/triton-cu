@@ -39,6 +39,13 @@ TritonGPUToLLVMTypeConverter::TritonGPUToLLVMTypeConverter(
   addConversion([&](triton::gpu::AsyncTokenType type) -> std::optional<Type> {
     return convertAsyncTokenType(type);
   });
+  // Named barrier tokens carry no runtime data — the hardware barrier ID and
+  // arrival count live as attributes on the defining alloc op. Convert to a
+  // dummy i32 so the conversion framework can materialize operands.
+  addConversion(
+      [ctx](triton::gpu::NamedBarrierType type) -> std::optional<Type> {
+        return IntegerType::get(ctx, 32);
+      });
 
   convertFP8Type<mlir::Float8E4M3FNUZType, mlir::Float8E4M3FNType,
                  mlir::Float8E5M2Type, mlir::Float8E5M2FNUZType>();

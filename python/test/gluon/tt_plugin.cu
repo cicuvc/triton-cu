@@ -115,6 +115,30 @@ struct PlaceholderLayout {
     static constexpr uint32_t REG_SIZE = 1;
 };
 
+// Hardware named barrier handle, passed from Gluon via gl.call as
+// `const NamedBarrier&`. The barrier id and arrival count are compile-time
+// constants assigned by the Triton named barrier allocation pass and
+// materialized into this struct by the extern_call lowering.
+//
+// NOTE: device functions must NOT call __syncthreads() directly — use
+// bar.sync()/bar.arrive() on the barrier the caller handed you, so the
+// synchronization scope (which threads participate) stays caller-controlled.
+struct NamedBarrier {
+    int id;
+    int count;
+
+    // Arrive and wait: PTX `bar.sync id, count`.
+    __device__ __forceinline__ void sync() const {
+        asm volatile("bar.sync %0, %1;" :: "r"(id), "r"(count) : "memory");
+    }
+
+    // Arrive without waiting: PTX `bar.arrive id, count`. For
+    // producer/consumer patterns; consumers wait via sync().
+    __device__ __forceinline__ void arrive() const {
+        asm volatile("bar.arrive %0, %1;" :: "r"(id), "r"(count) : "memory");
+    }
+};
+
 // Detects concrete TensorLayout::Layout types (vs. PlaceholderLayout probes,
 // which carry no basis groups and skip consistency checks).
 template<typename L>
@@ -468,6 +492,27 @@ __device__ void write_swizzled_2d(SharedTensor<T, Shape<32, 16>, TLayout>& shm) 
     for (int i = 0; i < 32; i++)
         for (int j = 0; j < 16; j++)
             shm(i, j) = static_cast<T>(i * 16 + j);
+}
+
+// named_barrier_rotate_1d: each thread stores its register to shared memory,
+// synchronizes the whole CTA on the CALLER-PROVIDED named barrier (the
+// callee never decides the synchronization scope), then reads back the slot
+// written by the next thread — out[i] = in[(i+1) % N]. REG_SIZE == 1, so a
+// thread's slot index is simply threadIdx.x.
+template<typename T, uint32_t N, typename SharedTLayout, typename TLayout>
+__device__ Tensor<T, Shape<N>, TLayout> named_barrier_rotate_1d(
+    SharedTensor<T, Shape<N>, SharedTLayout>& shm,
+    const Tensor<T, Shape<N>, TLayout>& vals,
+    const NamedBarrier& bar)
+{
+    static_assert(TLayout::REG_SIZE == 1,
+                  "rotate test assumes one register per thread");
+    uint32_t tid = threadIdx.x;
+    Tensor<T, Shape<N>, TLayout> out;
+    shm(tid) = vals.data[0];
+    bar.sync();
+    out.data[0] = shm((tid + 1) % N);
+    return out;
 }
 
 // ========================= END OF DEFINITIONS =============================

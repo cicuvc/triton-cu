@@ -45,7 +45,13 @@ public:
       : numThreadsPerWarp(numThreadsPerWarp) {}
 
   bool isBarrierOp(Operation *op) const override {
-    return isa<NVVM::BarrierOp>(op);
+    // Only operand-less barriers (bar.sync 0 from ttg.barrier / cluster
+    // barriers) are compiler-generated warp group barriers subject to
+    // rewriting. An NVVM::BarrierOp with an explicit barrierId comes from a
+    // user named barrier (ttg.named_barrier_sync) — its ID was assigned by
+    // the named barrier allocation pass and must be left untouched.
+    auto barrier = dyn_cast<NVVM::BarrierOp>(op);
+    return barrier && !barrier.getBarrierId();
   }
 
   Type getBarrierHandleType(MLIRContext *ctx) const override {

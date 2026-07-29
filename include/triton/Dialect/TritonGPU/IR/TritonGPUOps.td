@@ -783,6 +783,85 @@ def TTG_BarrierOp : TTG_Op<"barrier"> {
   }];
 }
 
+def TTG_AllocNamedBarrierOp : TTG_Op<"alloc_named_barrier"> {
+  let summary = "allocate a hardware named barrier resource";
+  let description = [{
+    The `ttg.alloc_named_barrier` op acquires a hardware named barrier
+    resource (PTX barrier IDs 0-15 per CTA) and returns a token of type
+    `ttg.named_barrier`. The token is consumed by `ttg.named_barrier_sync`,
+    `ttg.named_barrier_arrive` and `ttg.extern_call`.
+
+    The `count` attribute optionally specifies the number of threads expected
+    to arrive at the barrier (the second operand of `bar.sync`/`bar.arrive`).
+    If absent, the named barrier allocation pass infers it from the token's
+    uses: all uses must reside in a single warp group, and the count becomes
+    that warp group's thread count. Cross-warp-group usage or `arrive` usage
+    without an explicit `count` is a compile-time error.
+
+    The `barrier_id` attribute is backfilled by the named barrier allocation
+    pass via liveness-based graph coloring; tokens with disjoint live ranges
+    may share a hardware ID. Reserved IDs (0 for the default CTA barrier, 1
+    and partition IDs for warp specialization) are never assigned.
+
+    This op is intentionally not Pure: two allocations must never be merged
+    by CSE, and the op must survive until the allocation pass runs.
+
+    Example:
+    ```mlir
+    %bar = ttg.alloc_named_barrier
+    %bar2 = ttg.alloc_named_barrier {count = 128}
+    ```
+  }];
+
+  let arguments = (ins
+    OptionalAttr<I32Attr>:$count,
+    OptionalAttr<I32Attr>:$barrier_id
+  );
+  let results = (outs TTG_NamedBarrier:$result);
+
+  let assemblyFormat = "attr-dict";
+}
+
+def TTG_NamedBarrierSyncOp : TTG_Op<"named_barrier_sync"> {
+  let summary = "arrive at and wait on a named barrier";
+  let description = [{
+    The `ttg.named_barrier_sync` op lowers to PTX `bar.sync id, count`: each
+    executing thread arrives at the barrier and blocks until `count` threads
+    have arrived. All threads of the enclosing warp group must execute this
+    op. Also provides shared-memory ordering among participating threads.
+
+    Example:
+    ```mlir
+    ttg.named_barrier_sync %bar
+    ```
+  }];
+
+  let arguments = (ins TTG_NamedBarrier:$barrier);
+
+  let assemblyFormat = "$barrier attr-dict";
+}
+
+def TTG_NamedBarrierArriveOp : TTG_Op<"named_barrier_arrive"> {
+  let summary = "arrive on a named barrier without waiting";
+  let description = [{
+    The `ttg.named_barrier_arrive` op lowers to PTX `bar.arrive id, count`:
+    each executing thread contributes one arrival to the barrier without
+    blocking. Intended for producer/consumer patterns where producers arrive
+    and consumers wait via `ttg.named_barrier_sync`. The arrival `count` of
+    the barrier must account for all arriving threads across all arrive and
+    sync sites of a phase.
+
+    Example:
+    ```mlir
+    ttg.named_barrier_arrive %bar
+    ```
+  }];
+
+  let arguments = (ins TTG_NamedBarrier:$barrier);
+
+  let assemblyFormat = "$barrier attr-dict";
+}
+
 def TTG_ExternCallOp : TTG_Op<"extern_call", [
     SameVariadicOperandSize,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -801,7 +880,7 @@ def TTG_ExternCallOp : TTG_Op<"extern_call", [
   }];
 
   let arguments = (ins
-    Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType]>>:$inputs,
+    Variadic<AnyTypeOf<[TT_Tensor, TTG_MemDescType, TTG_NamedBarrier]>>:$inputs,
     StrAttr:$symbol,
     StrAttr:$libpath,
     UnitAttr:$assert_no_conv,

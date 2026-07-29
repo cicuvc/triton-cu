@@ -538,3 +538,148 @@ def test_cp_async_fill():
     ptx = compiled.asm["ptx"]
     assert "cp.async.cg.shared.global" in ptx, (
         f"Expected cp.async.cg in PTX but not found. First 200 chars:\n{ptx[:200]}")
+
+
+# ==================== NAMED BARRIER ====================
+
+NAMED_BARRIER_SMEM_LAYOUT = gl.SharedLinearLayout(
+    offset_bases=[[1], [2], [4], [8], [16], [32], [64]],
+    block_bases=[], alignment=16)
+
+
+@gluon.jit
+def named_barrier_smem_kernel(x_ptr, out_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0])
+    shared_layout: gl.constexpr = NAMED_BARRIER_SMEM_LAYOUT
+    idx = gl.arange(0, 128, layout=layout)
+    vals = gl.load(x_ptr + idx)
+    shm = gl.allocate_shared_memory(gl.float32, [128], shared_layout)
+    shm.store(vals)
+    # Named barrier instead of gl.barrier(): count is inferred as
+    # num_warps(4) * 32 = 128; ID is assigned by the allocation pass.
+    bar = gl.allocate_named_barrier()
+    bar.sync()
+    result = shm.load(layout)
+    gl.store(out_ptr + idx, result)
+
+
+def test_named_barrier_gluon_sync():
+    """Gluon-side named barrier: sync shared-memory write→read CTA-wide."""
+    torch.set_default_device('cuda')
+    x = torch.randn((128,), dtype=torch.float32)
+    out = torch.empty_like(x)
+    compiled = named_barrier_smem_kernel[(1,)](x, out, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x)
+
+    # The named barrier must lower to a hardware barrier with a non-zero ID
+    # (0 is reserved for the default CTA barrier) and the inferred count.
+    ptx = compiled.asm["ptx"]
+    assert "bar.sync 	1, 128;" in ptx or "bar.sync 1, 128;" in ptx, (
+        f"Expected 'bar.sync 1, 128;' in PTX. bar.sync lines:\n"
+        + "\n".join(l for l in ptx.splitlines() if "bar.sync" in l or "bar.arrive" in l))
+
+
+@gluon.jit
+def named_barrier_rotate_kernel(x_ptr, out_ptr):
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0])
+    shared_layout: gl.constexpr = NAMED_BARRIER_SMEM_LAYOUT
+    idx = gl.arange(0, 128, layout=layout)
+    vals = gl.load(x_ptr + idx)
+    shm = gl.allocate_shared_memory(gl.float32, [128], shared_layout)
+    # The CUDA device function receives `const NamedBarrier&` and calls
+    # bar.sync() internally between its shared-memory write and read phases.
+    bar = gl.allocate_named_barrier()
+    out_vals = gl.call("python/test/gluon/tt_plugin.cu",
+                       "named_barrier_rotate_1d", shm, vals, bar,
+                       result_layout=layout)
+    gl.store(out_ptr + idx, out_vals)
+
+
+def test_named_barrier_extern_rotate():
+    """Named barrier passed into CUDA as const NamedBarrier&; the callee
+    synchronizes internally (callee declares WHERE, caller decides WHO)."""
+    torch.set_default_device('cuda')
+    x = torch.randn((128,), dtype=torch.float32)
+    out = torch.empty_like(x)
+    compiled = named_barrier_rotate_kernel[(1,)](x, out, num_warps=4)
+    torch.cuda.synchronize()
+    # out[i] = x[(i+1) % 128]
+    ref = torch.roll(x, shifts=-1, dims=0)
+    torch.testing.assert_close(out, ref)
+
+    ptx = compiled.asm["ptx"]
+    assert "bar.sync" in ptx, (
+        f"Expected bar.sync in PTX from the inlined device function. "
+        f"bar lines:\n" + "\n".join(
+            l for l in ptx.splitlines() if "bar." in l))
+
+
+@gluon.jit
+def _ws_default(shm, bar, out_ptr):
+    # Consumer: arrive+wait until producer arrivals complete the phase.
+    bar.sync()
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0])
+    idx = gl.arange(0, 128, layout=layout)
+    result = shm.load(layout)
+    gl.store(out_ptr + idx, result)
+
+
+@gluon.jit
+def _ws_worker(shm, bar, x_ptr):
+    # Producer: write shared memory, then arrive (no wait).
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0])
+    idx = gl.arange(0, 128, layout=layout)
+    vals = gl.load(x_ptr + idx)
+    shm.store(vals)
+    bar.arrive()
+
+
+@gluon.jit
+def named_barrier_ws_kernel(x_ptr, out_ptr):
+    shared_layout: gl.constexpr = NAMED_BARRIER_SMEM_LAYOUT
+    shm = gl.allocate_shared_memory(gl.float32, [128], shared_layout)
+    # Cross-region barrier: default region (4 warps) syncs, worker partition
+    # (4 warps) arrives → count = (4 + 4) * 32 = 256, explicitly specified
+    # (cross-warp-group usage cannot be inferred).
+    bar = gl.allocate_named_barrier(256)
+    gl.warp_specialize([
+        (_ws_default, (shm, bar, out_ptr)),
+        (_ws_worker, (shm, bar, x_ptr)),
+    ], [4])
+
+
+def test_named_barrier_warp_specialize():
+    """Cross-warp-group named barrier with explicit count: producer in a
+    warp-spec partition arrives, consumer in the default region syncs."""
+    torch.set_default_device('cuda')
+    x = torch.randn((128,), dtype=torch.float32)
+    out = torch.empty_like(x)
+    named_barrier_ws_kernel[(1,)](x, out, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x)
+
+
+@gluon.jit
+def named_barrier_ws_bad_kernel(x_ptr, out_ptr):
+    shared_layout: gl.constexpr = NAMED_BARRIER_SMEM_LAYOUT
+    shm = gl.allocate_shared_memory(gl.float32, [128], shared_layout)
+    # Missing explicit count — cross-region usage must be rejected at
+    # compile time by the allocation pass.
+    bar = gl.allocate_named_barrier()
+    gl.warp_specialize([
+        (_ws_default, (shm, bar, out_ptr)),
+        (_ws_worker, (shm, bar, x_ptr)),
+    ], [4])
+
+
+def test_named_barrier_cross_region_requires_count(capfd):
+    """Cross-warp-group usage without explicit count is a compile error."""
+    torch.set_default_device('cuda')
+    x = torch.randn((128,), dtype=torch.float32)
+    out = torch.empty_like(x)
+    with pytest.raises(Exception):
+        named_barrier_ws_bad_kernel[(1,)](x, out, num_warps=4)
+    # The MLIR diagnostic goes to stderr; the Python exception only carries
+    # the generic pipeline-failure message.
+    assert "cross-warp-group" in capfd.readouterr().err

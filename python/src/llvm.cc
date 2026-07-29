@@ -1024,6 +1024,9 @@ void init_triton_llvm(py::module &&m) {
           },
           py::return_value_policy::reference_internal);
 
+  py::class_<NamedBarrierParam>(m, "NamedBarrierParam")
+      .def(py::init<>());
+
   py::class_<CudaFuncRequest>(m, "CudaFuncRequest")
       .def(py::init<>())
       .def_readwrite("symbol", &CudaFuncRequest::Symbol)

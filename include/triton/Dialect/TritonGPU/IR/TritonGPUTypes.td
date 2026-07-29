@@ -19,6 +19,20 @@ def TTG_AsyncToken : TTG_TypeDef<"AsyncToken", "async.token", []> {
   }];
 }
 
+def TTG_NamedBarrier : TTG_TypeDef<"NamedBarrier", "named_barrier", []> {
+  let summary = "named barrier token type";
+  let description = [{
+    `ttg.named_barrier` is a token type representing a hardware named barrier
+    resource (PTX `bar.sync`/`bar.arrive` with barrier IDs 0-15 per CTA).
+    Tokens are produced by `ttg.alloc_named_barrier` and consumed by
+    `ttg.named_barrier_sync`, `ttg.named_barrier_arrive` and `ttg.extern_call`.
+    Hardware barrier IDs are assigned by the named barrier allocation pass via
+    liveness-based graph coloring; tokens with disjoint live ranges may share
+    an ID. Reserved IDs (0 for the default CTA barrier, 1 and partition IDs
+    for warp specialization) are never handed out.
+  }];
+}
+
 // Memory descriptor type.
 def TTG_MemDescType : TTG_TypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> {
     let summary = "memory descriptor type (`::mlir::triton::gpu::MemDescType`) in Triton IR type system";

@@ -608,11 +608,36 @@ void init_gluon_ir(py::module &&m) {
              ValueRange tokens;
              self.create<ttg::AsyncWaitOp>(tokens, num);
            })
-       .def("create_convert_layout",
-            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
-              return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+        .def("create_convert_layout",
+             [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
+               return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+             })
+       .def("create_alloc_named_barrier",
+            [](GluonOpBuilder &self,
+               std::optional<int32_t> count) -> Value {
+              auto *ctx = self.getBuilder().getContext();
+              auto tokenTy = ttg::NamedBarrierType::get(ctx);
+              auto op = self.create<ttg::AllocNamedBarrierOp>(
+                  tokenTy,
+                  count ? IntegerAttr::get(IntegerType::get(ctx, 32), *count)
+                        : IntegerAttr(),
+                  /*barrier_id=*/IntegerAttr());
+              return op.getResult();
             })
-       .def("create_extern_call",
+       .def("get_named_barrier_ty",
+            [](GluonOpBuilder &self) -> Type {
+              return ttg::NamedBarrierType::get(
+                  self.getBuilder().getContext());
+            })
+       .def("create_named_barrier_sync",
+            [](GluonOpBuilder &self, Value barrier) {
+              self.create<ttg::NamedBarrierSyncOp>(barrier);
+            })
+       .def("create_named_barrier_arrive",
+            [](GluonOpBuilder &self, Value barrier) {
+              self.create<ttg::NamedBarrierArriveOp>(barrier);
+            })
+        .def("create_extern_call",
             [](GluonOpBuilder &self, const std::string &libpath,
                const std::string &symbol, std::vector<Value> &args,
                std::vector<Type> &resultTypes,

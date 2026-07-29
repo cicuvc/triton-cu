@@ -1035,7 +1035,7 @@ clang::FunctionDecl *
 CUDACompiler::LookupFunctionWithPlaceholderFallback(
     const llvm::StringRef &Name,
     const std::vector<std::variant<ScalarType, TensorParameter,
-                                   SharedTensorParameter>>
+                                   SharedTensorParameter, NamedBarrierParam>>
         &ParamTypes) {
   clang::FunctionDecl *Result = nullptr;
   TaskQueue.emplace([&](TensorTypeHelpers &helper,
@@ -1280,6 +1280,15 @@ CUDACompiler::inferReturnTypes(
         this->InvocationContext->SwitchTo(
             *this->CompileExecutionContext);
         argTypes[J] = Result;
+      } else if (std::get_if<NamedBarrierParam>(&req.ParamTypes[J])) {
+        clang::QualType Result;
+        this->TaskQueue.emplace(
+            [&](TensorTypeHelpers &helper, CustomAstConsumer &) {
+              Result = getNamedBarrierParamType(helper.Builder.Ctx);
+            });
+        this->InvocationContext->SwitchTo(
+            *this->CompileExecutionContext);
+        argTypes[J] = Result;
       }
     }
 
@@ -1356,6 +1365,15 @@ CUDACompiler::compileBitcode(
                     CustomAstConsumer &) {
               Result = getQualTypeFromScalarType(helper.Builder.Ctx,
                                                   *st);
+            });
+        this->InvocationContext->SwitchTo(
+            *this->CompileExecutionContext);
+        argTypes[J] = Result;
+      } else if (std::get_if<NamedBarrierParam>(&req.ParamTypes[J])) {
+        clang::QualType Result;
+        this->TaskQueue.emplace(
+            [&](TensorTypeHelpers &helper, CustomAstConsumer &) {
+              Result = getNamedBarrierParamType(helper.Builder.Ctx);
             });
         this->InvocationContext->SwitchTo(
             *this->CompileExecutionContext);
@@ -1490,11 +1508,16 @@ struct ScalarSpecInput {
   std::string dtype;
 };
 
+// Marker only: the CUDA side only needs the `const NamedBarrier&` type at
+// spec-extraction time. The actual barrier id/count are assigned later by
+// the named barrier allocation pass and materialized during LLVM lowering.
+struct NamedBarrierSpecInput {};
+
 struct ExternCallSpec {
   std::string symbol;
   std::string libpath;
   bool useFastMath = false;
-  llvm::SmallVector<std::variant<TensorSpecInput, SharedSpecInput, ScalarSpecInput>, 6> inputs;
+  llvm::SmallVector<std::variant<TensorSpecInput, SharedSpecInput, ScalarSpecInput, NamedBarrierSpecInput>, 6> inputs;
 };
 
 llvm::SmallVector<ExternCallSpec, 4>
@@ -1581,6 +1604,8 @@ extractExternCallSpecs(mlir::ModuleOp module) {
             input.alignment = sharedEnc.getAlignment();
             input.dtype = mapDtype(memDescTy.getElementType());
             spec.inputs.push_back(std::move(input));
+          } else if (isa<mlir::triton::gpu::NamedBarrierType>(type)) {
+            spec.inputs.push_back(NamedBarrierSpecInput{});
           }
         } else {
           auto tyAttr = cast<TypeAttr>(scalarTypesAttr[scalarIdx++]);
@@ -1628,6 +1653,8 @@ extractExternCallSpecs(mlir::ModuleOp module) {
           input.alignment = sharedEnc.getAlignment();
           input.dtype = mapDtype(memDescTy.getElementType());
           spec.inputs.push_back(std::move(input));
+        } else if (isa<mlir::triton::gpu::NamedBarrierType>(type)) {
+          spec.inputs.push_back(NamedBarrierSpecInput{});
         }
       }
     }
@@ -1672,6 +1699,8 @@ tritonExtractExternCallSpecs(mlir::ModuleOp module) {
         if constexpr (std::is_same_v<T, ScalarSpecInput>) {
           os << "\"dtype\": \"" << input.dtype << "\", ";
           os << "\"scalar\": \"" << input.dtype << "\"";
+        } else if constexpr (std::is_same_v<T, NamedBarrierSpecInput>) {
+          os << "\"named_barrier\": true";
         } else {
           // common fields for Tensor and Shared
           os << "\"dtype\": \"" << input.dtype << "\", ";
@@ -1960,6 +1989,15 @@ tritonCompileCuda(llvm::LLVMContext &ctx, const std::string &source,
                     CustomAstConsumer &) {
               Result = getQualTypeFromScalarType(helper.Builder.Ctx,
                                                   *st);
+            });
+        compiler.InvocationContext->SwitchTo(
+            *compiler.CompileExecutionContext);
+        argTypes[J] = Result;
+      } else if (std::get_if<NamedBarrierParam>(&req.ParamTypes[J])) {
+        clang::QualType Result;
+        compiler.TaskQueue.emplace(
+            [&](TensorTypeHelpers &helper, CustomAstConsumer &) {
+              Result = getNamedBarrierParamType(helper.Builder.Ctx);
             });
         compiler.InvocationContext->SwitchTo(
             *compiler.CompileExecutionContext);

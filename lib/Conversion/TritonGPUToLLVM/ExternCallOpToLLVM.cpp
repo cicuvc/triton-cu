@@ -110,6 +110,41 @@ buildClangStructType(MLIRContext *ctx, Type flatStructType) {
   return LLVM::LLVMStructType::getLiteral(ctx, {arrayTy});
 }
 
+// Resolves a named barrier token to its defining alloc op, tracing through
+// warp-specialize partition block arguments (explicit captures).
+static triton::gpu::AllocNamedBarrierOp findNamedBarrierAlloc(Value token) {
+  while (auto blockArg = dyn_cast<BlockArgument>(token)) {
+    auto partitions = dyn_cast<triton::gpu::WarpSpecializePartitionsOp>(
+        blockArg.getOwner()->getParentOp());
+    if (!partitions)
+      return nullptr;
+    token = partitions->getOperand(blockArg.getArgNumber());
+  }
+  return token.getDefiningOp<triton::gpu::AllocNamedBarrierOp>();
+}
+
+// Reads the hardware barrier ID and arrival count backfilled by the named
+// barrier allocation pass onto the token's defining alloc op.
+static std::pair<int, int> getNamedBarrierIdAndCount(Value token,
+                                                     Operation *useOp) {
+  auto alloc = findNamedBarrierAlloc(token);
+  if (!alloc) {
+    useOp->emitError("named barrier token is not defined by "
+                     "ttg.alloc_named_barrier");
+    return {0, 0};
+  }
+  auto idAttr = alloc.getBarrierIdAttr();
+  auto countAttr = alloc.getCountAttr();
+  if (!idAttr || !countAttr) {
+    useOp->emitError("named barrier has no assigned barrier_id/count; the "
+                     "triton-nvidia-gpu-allocate-named-barriers pass must "
+                     "run before lowering");
+    return {0, 0};
+  }
+  return {static_cast<int>(idAttr.getInt()),
+          static_cast<int>(countAttr.getInt())};
+}
+
 static Type buildClangPackedReturnType(MLIRContext *ctx, Type packedResult) {
   auto packedST = cast<LLVM::LLVMStructType>(packedResult);
   SmallVector<Type> clangFields;
@@ -179,6 +214,29 @@ struct ExternCallOpConversion
     }
 
     for (unsigned i = 0; i < numTensorArgs; ++i) {
+      if (isa<triton::gpu::NamedBarrierType>(op.getInputs()[i].getType())) {
+        // Named barrier: materialize `struct NamedBarrier {int id, count}`
+        // constants (assigned by the allocation pass) and pass by pointer,
+        // matching the C++ `const NamedBarrier&` convention.
+        auto [barId, barCount] =
+            getNamedBarrierIdAndCount(op.getInputs()[i], op);
+        auto i32Ty = rewriter.getIntegerType(32);
+        auto nbStructTy =
+            LLVM::LLVMStructType::getLiteral(ctx, {i32Ty, i32Ty});
+        Value nbVal = b.undef(nbStructTy);
+        nbVal = LLVM::InsertValueOp::create(rewriter, loc, nbVal,
+                                            b.i32_val(barId),
+                                            ArrayRef<int64_t>{0});
+        nbVal = LLVM::InsertValueOp::create(rewriter, loc, nbVal,
+                                            b.i32_val(barCount),
+                                            ArrayRef<int64_t>{1});
+        auto *builder = &static_cast<OpBuilder &>(rewriter);
+        Value stackPtr = LLVM::AllocaOp::create(
+            *builder, loc, ptrTy, nbStructTy, b.i32_val(1), 0).getResult();
+        b.store(nbVal, stackPtr);
+        promotedOperands[i] = stackPtr;
+        continue;
+      }
       bool isShared = (i < argSpaces.size() && argSpaces[i] == "shared");
       if (isShared) {
         // SHLOWER-01/02: bypass alloca+store+ptr path.

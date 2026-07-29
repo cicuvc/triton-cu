@@ -763,6 +763,15 @@ void ExternCallOp::getEffects(
                            SharedMemory::get());
     }
   }
+  // A named barrier operand means the device function performs bar.sync /
+  // bar.arrive on a hardware barrier. This is a synchronization side effect
+  // with shared-memory ordering semantics — report conservative effects so
+  // the call is never eliminated or reordered across shared-memory accesses.
+  if (llvm::any_of(getInputs().getTypes(),
+                   [](Type ty) { return isa<NamedBarrierType>(ty); })) {
+    effects.emplace_back(MemoryEffects::Read::get(), SharedMemory::get());
+    effects.emplace_back(MemoryEffects::Write::get(), SharedMemory::get());
+  }
 }
 
 OpFoldResult LocalAllocOp::fold(FoldAdaptor adaptor) {
@@ -1508,6 +1517,10 @@ size_t getSharedMemorySize(Type type) {
     return llvm::divideCeil(type.getIntOrFloatBitWidth(), 8);
   if (isa<PointerType, TensorDescInterface>(type))
     return 8;
+  if (isa<NamedBarrierType>(type))
+    // Tokens carry no runtime data; the value converted for capture is a
+    // dummy i32 (the hardware ID/count live as attributes on the alloc op).
+    return 4;
   if (auto desc = dyn_cast<MemDescType>(type)) {
     if (!isa<SharedMemorySpaceAttr>(desc.getMemorySpace()))
       return 8;

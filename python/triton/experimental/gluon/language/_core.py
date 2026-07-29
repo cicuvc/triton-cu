@@ -714,6 +714,95 @@ def barrier(*, cluster: bool = False, _semantic=None):
     _semantic.builder.create_cluster_barrier()
 
 
+class named_barrier_type(base_type):
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, named_barrier_type)
+
+    def __str__(self) -> str:
+        return "named_barrier"
+
+    def mangle(self) -> str:
+        return "named_barrier"
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["named_barrier", int]:
+        return named_barrier(handles[cursor]), cursor + 1
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(builder.get_named_barrier_ty())
+
+    def to_ir(self, builder: ir.builder) -> ir.type:
+        return builder.get_named_barrier_ty()
+
+
+class named_barrier(base_value):
+    """
+    Represents a hardware named barrier resource (PTX ``bar.sync`` /
+    ``bar.arrive`` on barrier IDs 0-15 per CTA) in Gluon IR.
+
+    The hardware barrier ID is assigned by the compiler's allocation pass
+    via liveness analysis; tokens with disjoint live ranges may share an ID.
+    The reserved IDs (0 for the default CTA barrier, warp-specialization
+    partition barriers) are never assigned to user barriers.
+    """
+
+    def __init__(self, handle):
+        self.handle = handle
+        self.type = named_barrier_type()
+
+    def _set_name(self, builder: ir.builder, name: str) -> None:
+        self.handle.set_loc(builder.create_name_loc(name, self.handle.get_loc()))
+
+    def _flatten_ir(self, handles: List[ir.value]) -> None:
+        handles.append(self.handle)
+
+    def __str__(self) -> str:
+        return "named_barrier"
+
+    @builtin
+    def sync(self, _semantic=None) -> None:
+        """
+        Arrive at and wait on this named barrier (``bar.sync id, count``).
+
+        All threads of the enclosing warp group must execute this op.
+        """
+        return _semantic.named_barrier_sync(self)
+
+    @builtin
+    def arrive(self, _semantic=None) -> None:
+        """
+        Arrive on this named barrier without waiting (``bar.arrive id, count``).
+
+        Intended for producer/consumer patterns where producers arrive and
+        consumers wait via :meth:`sync`. Requires an explicit ``count`` at
+        allocation time.
+        """
+        return _semantic.named_barrier_arrive(self)
+
+
+@builtin
+def allocate_named_barrier(count=None, _semantic=None) -> named_barrier:
+    """
+    Allocate a hardware named barrier resource.
+
+    Args:
+        count: Optional number of threads expected to arrive at the barrier
+            (the second operand of ``bar.sync``/``bar.arrive``). If omitted,
+            the compiler infers it from the token's uses: all uses must
+            reside in a single warp group and use ``sync`` (or extern calls)
+            only; the count becomes that warp group's thread count.
+            Cross-warp-group usage or ``arrive`` usage requires an explicit
+            count.
+
+    Returns:
+        named_barrier: A barrier token usable with :meth:`named_barrier.sync`
+        and :meth:`named_barrier.arrive`, or passable to an external CUDA
+        function via ``gl.call`` (received as ``const NamedBarrier&``).
+    """
+    count = _unwrap_if_constexpr(count)
+    return _semantic.allocate_named_barrier(count)
+
+
 @builtin
 def bank_conflicts(distr_ty, shared_ty, _semantic=None) -> int:
     """
@@ -807,7 +896,7 @@ def call(src_path, func, *args, result_layout, assert_no_conv=False, use_fast_ma
         if isinstance(a, constexpr):
             scalar_args.append(a.value)
             arg_kinds.append(1)
-        elif isinstance(a, (tensor, shared_memory_descriptor)):
+        elif isinstance(a, (tensor, shared_memory_descriptor, named_barrier)):
             tensors.append(a)
             arg_kinds.append(0)
         else:
