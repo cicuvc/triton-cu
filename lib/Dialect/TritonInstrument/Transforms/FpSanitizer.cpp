@@ -60,10 +60,6 @@ constexpr int64_t kI8MmaK = 32;
 
 bool supportsI8DotDecomposition(PatternRewriter &rewriter,
                                 IntegerType accElem) {
-  auto moduleOp =
-      rewriter.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
-  if (getAMDArch(moduleOp))
-    return false;
   return llvm::is_contained({16, 32, 64}, accElem.getWidth());
 }
 
@@ -2113,8 +2109,8 @@ struct DotPattern : public OpRewritePattern<tt::DotOp> {
     auto [tileM, tileN] = getMmaEmulationTileShape(rewriter, m, n, k, accElem);
 
     // Use optimized blocked layouts for emulation tiles instead of the
-    // original dot encodings.  Encodings like AMDWmmaEncodingAttr impose
-    // minimum shape requirements that FMA fallback tiles cannot satisfy.
+    // original dot encodings which may impose minimum shape requirements
+    // that FMA fallback tiles cannot satisfy.
     auto accLayout = getOptimizedBlockedEncoding(rewriter, {tileM, tileN},
                                                  cTy.getElementType());
     auto aLayout =

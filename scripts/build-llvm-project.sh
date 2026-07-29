@@ -2,7 +2,7 @@
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
-LLVM_TARGETS=${LLVM_TARGETS:-Native;NVPTX;AMDGPU}
+LLVM_TARGETS=${LLVM_TARGETS:-Native;NVPTX}
 LLVM_PROJECTS=${LLVM_PROJECTS:-mlir;llvm;lld;clang}
 LLVM_DISTRIBUTION_COMPONENTS=${LLVM_DISTRIBUTION_COMPONENTS:-"llvm-headers;llvm-libraries;cmake-exports;mlir-headers;mlir-libraries;mlir-cmake-exports;lld-headers;lld-libraries;lld-cmake-exports;clang;clang-resource-headers;FileCheck;not;split-file;llc;opt;llvm-config;mlir-tblgen;mlir-translate"}
 LLVM_BUILD_TYPE=${LLVM_BUILD_TYPE:-RelWithDebInfo}

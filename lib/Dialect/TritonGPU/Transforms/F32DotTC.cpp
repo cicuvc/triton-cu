@@ -74,8 +74,6 @@ unsigned getBF16Count(triton::InputPrecision precision) {
 // Implements 3xBF16 https://arxiv.org/abs/1904.06376
 // See also
 // https://github.com/openxla/xla/blob/e33f93fb7220d408811afdc926cf10baaf49c64e/xla/backends/gpu/codegen/triton/dot_algorithms.cc#L152
-// As well as
-// https://github.com/ROCm/rocm-libraries/blob/develop/projects/hipblaslt/tensilelite/Tensile/Components/LocalRead.py#L288-L330
 struct BF16xN : public OpRewritePattern<DotOp> {
   using OpRewritePattern::OpRewritePattern;
 

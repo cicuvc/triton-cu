@@ -34,8 +34,7 @@ bool GpuHello::runOnModule(Module &module) {
     if (function.isIntrinsic())
       continue;
     StringRef functionName = function.getName();
-    if (function.getCallingConv() == CallingConv::AMDGPU_KERNEL ||
-        function.getCallingConv() == CallingConv::PTX_Kernel ||
+    if (function.getCallingConv() == CallingConv::PTX_Kernel ||
         functionName.contains("kernel")) {
       for (Function::iterator basicBlock = function.begin();
            basicBlock != function.end(); basicBlock++) {

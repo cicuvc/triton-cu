@@ -97,9 +97,6 @@ bool isGenericLinearEncoding(Attribute attr) {
     return isGenericLinearEncoding(dotOp.getParent());
   if (auto slice = dyn_cast<SliceEncodingAttr>(attr))
     return isGenericLinearEncoding(slice.getParent());
-  if (auto wmma = dyn_cast<AMDWmmaEncodingAttr>(attr))
-    return !isPermutationMatrixLayout(wmma.getCtaLayout());
-
   return false;
 }
 
@@ -290,9 +287,6 @@ SmallVector<unsigned> getOrder(SharedEncodingTrait layout,
       return {0};
     }
     return getMatrixOrder(shape.size(), !sharedLayout.getTransposed());
-  }
-  if (auto sharedLayout = dyn_cast<AMDRotatingSharedEncodingAttr>(layout)) {
-    return llvm::to_vector(sharedLayout.getOrder());
   }
   if (auto partitionedLayout =
           dyn_cast<PartitionedSharedEncodingAttr>(layout)) {
@@ -1513,248 +1507,6 @@ void NvidiaMmaEncodingAttr::print(AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// MFMA encoding
-//===----------------------------------------------------------------------===//
-
-Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
-  if (parser.parseLess().failed())
-    return {};
-  DictionaryAttr dict;
-  if (parser.parseAttribute(dict).failed())
-    return {};
-  if (parser.parseGreater().failed())
-    return {};
-
-  unsigned version = 0;
-  SmallVector<unsigned> warpsPerCTA;
-  SmallVector<unsigned> instrShape;
-  bool isTransposed;
-  SmallVector<unsigned> tilesPerWarp = {};
-  unsigned elementBitWidth = 32;
-  Attribute cgaAttr = nullptr;
-
-  for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "version") {
-      if (parseUInt(parser, attr, version, "version").failed())
-        return {};
-    }
-    if (attr.getName() == "warpsPerCTA") {
-      if (parseIntArrayAttr(parser, attr, warpsPerCTA, "warpsPerCTA").failed())
-        return {};
-    }
-    if (attr.getName() == "instrShape") {
-      if (parseIntArrayAttr(parser, attr, instrShape, "instrShape").failed())
-        return {};
-    }
-    if (attr.getName() == "isTransposed") {
-      if (parseBool(parser, attr, isTransposed, "isTransposed").failed())
-        return {};
-    }
-    if (attr.getName() == "CGALayout") {
-      cgaAttr = attr.getValue();
-      continue;
-    }
-    if (attr.getName() == "tilesPerWarp") {
-      if (parseIntArrayAttr(parser, attr, tilesPerWarp, "tilesPerWarp")
-              .failed())
-        return {};
-    }
-    if (attr.getName() == "elementBitWidth") {
-      if (parseUInt(parser, attr, elementBitWidth, "elementBitWidth").failed())
-        return {};
-    }
-  }
-
-  std::optional<CGAEncodingAttr> CGALayout =
-      parseCGAAttr(parser, cgaAttr, /*rank=*/warpsPerCTA.size());
-  if (!CGALayout.has_value())
-    return {};
-
-  if (tilesPerWarp.empty())
-    tilesPerWarp = SmallVector<unsigned>(instrShape.size(), 1);
-
-  return parser.getChecked<AMDMfmaEncodingAttr>(
-      parser.getContext(), version, warpsPerCTA, instrShape, isTransposed,
-      *CGALayout, tilesPerWarp, elementBitWidth);
-}
-
-void AMDMfmaEncodingAttr::print(AsmPrinter &printer) const {
-  printer << "<{"
-          << "version = " << getVersion()                   //
-          << ", warpsPerCTA = [" << getWarpsPerCTA() << "]" //
-          << ", instrShape = [" << getInstrShape() << "]";
-
-  printer << ", isTransposed = " << getIsTransposed();
-
-  maybePrintCGALayout(printer, getCGALayout());
-
-  if (!hasUnitTilesPerWarp())
-    printer << ", tilesPerWarp = [" << getTilesPerWarp() << "]";
-
-  auto elementBitWidth = getElementBitWidth();
-  if (elementBitWidth != 32)
-    printer << ", elementBitWidth = " << elementBitWidth;
-
-  printer << "}>";
-}
-
-LogicalResult AMDMfmaEncodingAttr::verify(
-    function_ref<mlir::InFlightDiagnostic()> emitError, unsigned version,
-    llvm::ArrayRef<unsigned int> warpsPerCTA,
-    llvm::ArrayRef<unsigned int> instrShape, bool isTransposed,
-    mlir::triton::gpu::CGAEncodingAttr,
-    llvm::ArrayRef<unsigned int> tilesPerWarp, unsigned elementBitWidth) {
-  if (!(version >= 0 && version <= 4)) {
-    return emitError() << "version must be in the [0, 4] range";
-  }
-
-  auto mDim = instrShape[0];
-  auto nDim = instrShape[1];
-  const std::array<std::pair<unsigned, unsigned>, 4> validDims = {
-      {{32, 32}, {16, 16}, {64, 4}, {4, 64}}};
-  if (!llvm::is_contained(validDims, std::make_pair(mDim, nDim))) {
-    return emitError() << "invalid (mDim, nDim) combination: (" << mDim << ", "
-                       << nDim << ")";
-  }
-
-  if (!(elementBitWidth == 32 || elementBitWidth == 64))
-    return emitError() << "elementBitWidth must be 32 or 64";
-
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// WMMA encoding
-//===----------------------------------------------------------------------===//
-
-Attribute AMDWmmaEncodingAttr::parse(AsmParser &parser, Type type) {
-  if (parser.parseLess().failed())
-    return {};
-  DictionaryAttr dict;
-  if (parser.parseAttribute(dict).failed())
-    return {};
-  if (parser.parseGreater().failed())
-    return {};
-
-  unsigned version = 0;
-  unsigned rank = 2;
-  bool isTransposed = false;
-  SmallVector<unsigned> instrShape = getDefaultInstrShape();
-  Attribute cgaAttr = nullptr;
-  Attribute warpLayAttr = nullptr;
-
-  for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "version") {
-      if (parseUInt(parser, attr, version, "version").failed())
-        return {};
-    }
-    if (attr.getName() == "rank") {
-      if (parseUInt(parser, attr, rank, "rank").failed())
-        return {};
-    }
-    if (attr.getName() == "ctaLayout") {
-      warpLayAttr = attr.getValue();
-      continue;
-    }
-    if (attr.getName() == "isTranspose") {
-      if (parseBool(parser, attr, isTransposed, "isTranspose").failed())
-        return {};
-    }
-    if (attr.getName() == "CGALayout") {
-      cgaAttr = attr.getValue();
-      continue;
-    }
-    if (attr.getName() == "instrShape") {
-      instrShape.clear();
-      if (parseIntArrayAttr(parser, attr, instrShape, "instrShape").failed()) {
-        return {};
-      }
-    }
-  }
-
-  if (!warpLayAttr) {
-    return {};
-  }
-
-  auto dictWarpLay = llvm::dyn_cast<DictionaryAttr>(warpLayAttr);
-  if (!dictWarpLay) {
-    parser.emitError(parser.getNameLoc(),
-                     "expected dictionary value for 'ctaLayout'");
-    return {};
-  }
-
-  // Enable optional parsing of register dimension, since it's almost always
-  // size 1 dim.
-  auto ctx = parser.getContext();
-  LinearLayout ctaLL;
-  std::vector<std::string> inDimNames;
-  auto kReg = StringAttr::get(ctx, "register");
-  Attribute value = dictWarpLay.get(kReg);
-  if (!value) {
-    ctaLL = parseLinearLayout(dictWarpLay, parser, {"warp"}, rank).value();
-    auto outDims = standardOutDimNames(ctx, rank);
-    auto regsLL = LinearLayout::identity1D(1, kReg, outDims[rank - 1]);
-    ctaLL = regsLL * ctaLL;
-  } else {
-    ctaLL = parseLinearLayout(dictWarpLay, parser, {"register", "warp"}, rank)
-                .value();
-  }
-
-  std::optional<CGAEncodingAttr> CGALayout =
-      parseCGAAttr(parser, cgaAttr, /*rank=*/rank);
-  if (!CGALayout.has_value())
-    return {};
-
-  return parser.getChecked<AMDWmmaEncodingAttr>(parser.getContext(), version,
-                                                std::move(ctaLL), isTransposed,
-                                                *CGALayout, instrShape);
-}
-
-void AMDWmmaEncodingAttr::print(AsmPrinter &printer) const {
-  printer << "<{"
-          << "version = " << getVersion()
-          << ", isTranspose = " << getIsTransposed() << ", ctaLayout = {";
-
-  printLinearLayout(printer, getCtaLayout(), /*skipEmptyBases*/ true);
-
-  printer << "}";
-
-  maybePrintCGALayout(printer, getCGALayout());
-
-  if (getInstrShape() != ArrayRef(getDefaultInstrShape())) {
-    printer << ", instrShape = [" << getInstrShape() << "]";
-  }
-  printer << "}>";
-}
-
-LogicalResult
-AMDWmmaEncodingAttr::verify(function_ref<mlir::InFlightDiagnostic()> emitError,
-                            unsigned version, LinearLayout ctaLayout,
-                            bool isTransposed, CGAEncodingAttr cgaLayout,
-                            llvm::ArrayRef<unsigned> instrShape) {
-  if (!(version >= 1 && version <= 3))
-    return emitError() << "WMMA version must be in the [1, 3] range";
-
-  auto shape = SmallVector<unsigned>(instrShape);
-  auto validShapesV1 = std::vector<llvm::SmallVector<unsigned>>{{16, 16, 16}};
-  if (version == 1 && !llvm::is_contained(validShapesV1, shape))
-    return emitError() << "invalid WMMA v1 instruction shape";
-
-  auto validShapesV2 =
-      std::vector<llvm::SmallVector<unsigned>>{{16, 16, 16}, {16, 16, 32}};
-  if (version == 2 && !llvm::is_contained(validShapesV2, shape))
-    return emitError() << "invalid WMMA v2 instruction shape";
-
-  auto validShapesV3 = std::vector<llvm::SmallVector<unsigned>>{
-      {16, 16, 4},   {16, 16, 32}, {16, 16, 64},
-      {16, 16, 128}, {32, 16, 64}, {32, 16, 128}};
-  if (version == 3 && !llvm::is_contained(validShapesV3, shape))
-    return emitError() << "invalid WMMA v3 instruction shape";
-
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
 // Sliced Encoding
 //===----------------------------------------------------------------------===//
 
@@ -2564,215 +2316,6 @@ int32_t NVMMASharedEncodingAttr::getAlignment() const {
 }
 
 //===----------------------------------------------------------------------===//
-// AMDRotatingShared encoding
-//===----------------------------------------------------------------------===//
-
-Attribute AMDRotatingSharedEncodingAttr::parse(AsmParser &parser, Type type) {
-  return parseSwizzledEncoding<AMDRotatingSharedEncodingAttr>(parser, type);
-}
-
-void AMDRotatingSharedEncodingAttr::print(AsmPrinter &printer) const {
-  printer << "<{"
-          << "vec = " << getVec() //
-          << ", perPhase = " << getPerPhase()
-          << ", maxPhase = " << getMaxPhase() //
-          << ", order = [" << getOrder() << "]";
-  maybePrintCGALayout(printer, getCGALayout());
-  printer << "}>";
-}
-
-//===----------------------------------------------------------------------===//
-// Mfma encoding
-//===----------------------------------------------------------------------===//
-// TODO: there is a lot of common code with MmaEncoding here
-
-bool AMDMfmaEncodingAttr::hasUnitTilesPerWarp() const {
-  return llvm::all_of(getTilesPerWarp(), [](int x) { return x == 1; });
-}
-
-SmallVector<int64_t>
-AMDMfmaEncodingAttr::getInstrShapeForOperand(int kWidth, int opIdx) const {
-  auto mnkDim = getInstrShape();
-  unsigned mDim = mnkDim[0];
-  unsigned nDim = mnkDim[1];
-  assert((mDim == nDim) && (mDim == 32 || mDim == 16 || mDim == 4) ||
-         (mDim == 64 && nDim == 4) || (mDim == 4 && nDim == 64));
-
-  constexpr int warpSize = 64; // MFMA is always based on the 64-wide warps.
-  int kGroups = warpSize / std::min(mDim, nDim); // for 64x4 and 4x64,
-                                                 // kGroups = 16
-  int64_t kDim = kWidth * kGroups;
-
-  if (opIdx == 0)
-    return {mDim, kDim};
-  else
-    assert(opIdx == 1);
-  return {kDim, nDim};
-}
-
-SmallVector<unsigned> AMDMfmaEncodingAttr::getRepOrder() const {
-  return getMatrixOrder(getRank(), /*rowMajor*/ true);
-}
-
-SmallVector<unsigned>
-AMDMfmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
-  return getOrderForDotOperand(opIdx, getRank(), /*kContig*/ true);
-}
-
-SmallVector<int64_t>
-AMDMfmaEncodingAttr::getRepForOperand(ArrayRef<int64_t> operandShape,
-                                      int kWidth, int opIdx) const {
-  auto operandTileShape = getInstrShapeForOperand(kWidth, opIdx);
-  auto rank = operandShape.size();
-  auto warpsPerCTA = getWarpsPerCTA();
-  auto tilesPerWarp = getTilesPerWarp();
-
-  int numRepBatch =
-      rank == 3 ? std::max<int64_t>(1, operandShape[0] / warpsPerCTA[0]) : 1;
-  if (opIdx == 0)
-    return {
-        numRepBatch,
-        std::max<int64_t>(1, operandShape[rank - 2] /
-                                 (operandTileShape[0] * tilesPerWarp[rank - 2] *
-                                  warpsPerCTA[rank - 2])) *
-            tilesPerWarp[rank - 2],
-        std::max<int64_t>(1, operandShape[rank - 1] / operandTileShape[1])};
-  else {
-    assert(opIdx == 1);
-    return {
-        numRepBatch,
-        std::max<int64_t>(1, operandShape[rank - 2] / operandTileShape[0]),
-        std::max<int64_t>(1, operandShape[rank - 1] /
-                                 (operandTileShape[1] * tilesPerWarp[rank - 1] *
-                                  warpsPerCTA[rank - 1])) *
-            tilesPerWarp[rank - 1]};
-  }
-}
-
-SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
-    CGAEncodingAttr cgaLayout, int operandIdx, ArrayRef<int64_t> operandShape,
-    ArrayRef<unsigned> sharedOrder, unsigned vectorSize, unsigned elemBitWidth,
-    bool needTrans) const {
-  int kDimIndex = operandIdx == 0 ? 1 : 0;
-
-  // Disable swizzling for scales
-  if (operandIdx >= 2) {
-    return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, sharedOrder,
-                                           cgaLayout);
-  }
-
-  if (needTrans)
-    kDimIndex = 1 - kDimIndex;
-
-  bool isKContig = sharedOrder[0] == kDimIndex;
-  // GFX950 supports LDS transpose load instructions, so we need swizzling even
-  // when K dimension is not the contiguous dimension.
-  bool isGFX950 = getVersion() == 4;
-  bool swizzleNonKContig =
-      isGFX950 && (elemBitWidth == 8 || elemBitWidth == 16);
-
-  if (!isKContig && !swizzleNonKContig) {
-    // Do not swizzle. In this case accesses will go in different banks even
-    // without swizzling.
-    return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, sharedOrder,
-                                           cgaLayout);
-  }
-
-  const unsigned numBanks = isGFX950 ? 64 : 32;
-  const unsigned bankBitWidth = 32;
-  const unsigned simdWidth = 16;
-
-  // Number of inner dimension rows per one pattern repeat
-  int innerDimLength = operandShape[sharedOrder[0]];
-  int elemsPerOneBanksRow = (numBanks * bankBitWidth) / elemBitWidth;
-
-  int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
-  int maxPhase =
-      std::max(std::min(simdWidth / perPhase, innerDimLength / vectorSize), 1u);
-
-  // TODO (zhanglx): figure out better parameters for mfma4
-  if (getInstrShape()[0] == 4)
-    maxPhase = 4;
-
-  return SwizzledSharedEncodingAttr::get(getContext(), vectorSize, perPhase,
-                                         maxPhase, sharedOrder, cgaLayout);
-}
-
-//===----------------------------------------------------------------------===//
-// Wmma encoding
-//===----------------------------------------------------------------------===//
-
-SmallVector<unsigned> AMDWmmaEncodingAttr::getRepOrder() const {
-  return getMatrixOrder(getRank(), /*rowMajor*/ true);
-}
-
-SmallVector<unsigned>
-AMDWmmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
-  return getOrderForDotOperand(opIdx, getRank(), /*kContig*/ true);
-}
-
-// Captures the operand-swap for asymmetric isTransposed WMMA
-unsigned AMDWmmaEncodingAttr::getOperandNonKDim(unsigned mDim, unsigned nDim,
-                                                bool isTransposed,
-                                                unsigned opIdx) {
-  // opIdx=0 -> mDim, opIdx=1 -> nDim. Flipped for asymmetric WMMA with
-  // isTransposed=true as we must swap the operands and per-operand layouts
-  // must match the swap.
-  bool isFlip = isTransposed && (mDim != nDim);
-  unsigned eff = isFlip ? (1 - opIdx) : opIdx;
-  return eff == 0 ? mDim : nDim;
-}
-
-unsigned AMDWmmaEncodingAttr::getOperandNonKDim(unsigned opIdx) const {
-  auto mnk = getInstrShape();
-  return getOperandNonKDim(mnk[0], mnk[1], getIsTransposed(), opIdx);
-}
-
-SwizzledSharedEncodingAttr AMDWmmaEncodingAttr::composeSharedLayoutForOperand(
-    CGAEncodingAttr cgaLayout, int operandIdx, ArrayRef<int64_t> operandShape,
-    ArrayRef<unsigned> sharedOrder, unsigned kWidth, unsigned elemBitWidth,
-    bool needTrans) const {
-  int kDimIndex = operandIdx == 0 ? 1 : 0;
-  bool isKContig = sharedOrder[0] == kDimIndex;
-
-  if (!isKContig) {
-    // Do not swizzle. In this case accesses will go in different banks even
-    // without swizzling.
-    return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, sharedOrder,
-                                           cgaLayout);
-  }
-
-  // max vectorization size for ds_load is 128 bits
-  int vectorSize = std::min(kWidth * elemBitWidth, 128u) / elemBitWidth;
-
-  const int numBanks = 32;
-  const int bankBitWidth = 32;
-
-  // Number of inner dimension rows per one pattern repeat
-  int innerDimLength = operandShape[sharedOrder[0]];
-  int elemsPerOneBanksRow = (numBanks * bankBitWidth) / elemBitWidth;
-
-  int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
-  // for both RDNA3 and RDNA4, the M/N dimension of wmma is 16
-  // This represents the max number of rows that can be accessed
-  // at the same time
-  int mDim = getInstrShape()[0];
-  int maxPhase =
-      std::max(std::min(mDim / perPhase, innerDimLength / vectorSize), 1);
-
-  return SwizzledSharedEncodingAttr::get(getContext(), vectorSize, perPhase,
-                                         maxPhase, sharedOrder, cgaLayout);
-}
-
-bool AMDWmmaEncodingAttr::isEqualIgnoringCGALayout(
-    AMDWmmaEncodingAttr other) const {
-  return getVersion() == other.getVersion() &&
-         getCtaLayout() == other.getCtaLayout() &&
-         getInstrShape() == other.getInstrShape() &&
-         getIsTransposed() == other.getIsTransposed();
-}
-
-//===----------------------------------------------------------------------===//
 // Mma encoding
 //===----------------------------------------------------------------------===//
 
@@ -2889,28 +2432,6 @@ LogicalResult DotOperandEncodingAttr::verify(
              << "ttg.dot_op opIdx parameter must be 0 for "
                 "Hopper MMA parent, since Hopper WGMMA only allows first "
                 "operand to be in registers";
-    return success();
-  }
-
-  if (auto parentAttr = mlir::dyn_cast<AMDWmmaEncodingAttr>(parent)) {
-    if (parentAttr.getVersion() == 1 && (kWidth != 8 && kWidth != 16))
-      return emitError()
-             << "ttg.dot_op kWidth parameter must be 8/16 for WMMA v1 "
-                "(including packed cases for `scaled_dot`)";
-    if (parentAttr.getVersion() == 2 && !llvm::is_contained({4, 8, 16}, kWidth))
-      return emitError()
-             << "ttg.dot_op kWidth parameter must be 4/8/16 for WMMA v2 "
-                "(including packed cases for `scaled_dot`)";
-    if (parentAttr.getVersion() == 3 && kWidth == 0)
-      return emitError()
-             << "ttg.dot_op kWidth parameter is mandatory for WMMA v3 ";
-    return success();
-  }
-
-  if (auto parentAttr = mlir::dyn_cast<AMDMfmaEncodingAttr>(parent)) {
-    if (kWidth == 0)
-      return emitError() << "ttg.dot_op kWidth parameter is mandatory for "
-                            "MFMA parent";
     return success();
   }
 
@@ -3167,16 +2688,8 @@ struct TritonGPUInferLayoutInterface
       if (opIdx != dotOpEnc.getOpIdx())
         return emitOptionalError(location, "Wrong opIdx");
       auto parentEnc = dotOpEnc.getParent();
-      if (retEncoding != parentEnc) {
-        // For AMDWmma, compare all fields except the CGA layout. Because in
-        // multi-CTA, operands have different CGA layouts.
-        auto retWmma = dyn_cast<AMDWmmaEncodingAttr>(retEncoding);
-        auto parentWmma = dyn_cast<AMDWmmaEncodingAttr>(parentEnc);
-        if (retWmma && parentWmma &&
-            retWmma.isEqualIgnoringCGALayout(parentWmma))
-          return success();
+      if (retEncoding != parentEnc)
         return emitOptionalError(location, "Incompatible parent encoding");
-      }
     } else
       return emitOptionalError(
           location, "Dot's a/b's encoding should be of DotOperandEncodingAttr");
@@ -3221,32 +2734,6 @@ struct TritonGPUInferLayoutInterface
         return op->emitError("unsupported MMA version");
     }
 
-    // For AMDWmmaEncodingAttr verify multi-cta CGA layout compatibility
-    auto wmmaAParentEnc = dyn_cast<AMDWmmaEncodingAttr>(aEncoding.getParent());
-    auto wmmaBParentEnc = dyn_cast<AMDWmmaEncodingAttr>(bEncoding.getParent());
-    auto wmmaResEncoding = dyn_cast<AMDWmmaEncodingAttr>(resEnc);
-    if (wmmaAParentEnc && wmmaBParentEnc && wmmaResEncoding) {
-      auto resLL = wmmaResEncoding.getCGALayout().getLinearLayout();
-
-      if (!resLL.isInvertible())
-        return op->emitError("Accumulator CGA layout should not broadcast or "
-                             "have repeated rows");
-
-      auto aLL = aEncoding.getCGALayout().getLinearLayout();
-      auto bLL = bEncoding.getCGALayout().getLinearLayout();
-      // A broadcasts over N, B over M (the trailing two result dims). Batch
-      // dims (rank > 2) are shared across A/B/result, not broadcast.
-      auto ctx = op->getContext();
-      int rank = cast<RankedTensorType>(dotOp.getD().getType()).getRank();
-      auto mDim = StringAttr::get(ctx, "dim" + std::to_string(rank - 2));
-      auto nDim = StringAttr::get(ctx, "dim" + std::to_string(rank - 1));
-      // resizeOutDim(d, 1) makes d broadcast-only.
-      if (aLL != resLL.resizeOutDim(nDim, 1))
-        return op->emitError("Incompatible CGA layout for operand 0");
-
-      if (bLL != resLL.resizeOutDim(mDim, 1))
-        return op->emitError("Incompatible CGA layout for operand 1");
-    }
     return success();
   }
 
@@ -3813,10 +3300,9 @@ struct TritonGPUVerifyTensorLayoutInterface
   }
 
   // Ops that have been explicitly vetted to handle encodings with swizzled
-  // warp bases or non-injective layouts (GenericLinearEncodingAttr,
-  // AMDWmmaEncoding with swizzled warps, etc.).  All other ops reject them so
-  // that unvetted code paths fail early rather than silently producing wrong
-  // results.
+  // warp bases or non-injective layouts (GenericLinearEncodingAttr, etc.).
+  // All other ops reject them so that unvetted code paths fail early rather
+  // than silently producing wrong results.
   static bool isOpVettedForGenericEncoding(Operation *op) {
     if (op->hasTrait<OpTrait::Elementwise>())
       return true;

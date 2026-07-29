@@ -391,7 +391,6 @@ LinearLayout ReduceOpHelper::getInterLayout(const LinearLayout &layout,
     return LinearLayout(std::move(bases), to_vector(layout.getOutDimNames()));
   }
 
-  // Assumptions (easily relaxed if AMD needs it)
   // We assume that
   // max number of warps * max number of blocks <= (max number of lanes)^2
   // We check this in logarithmic space (number of bases)

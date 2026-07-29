@@ -513,31 +513,6 @@ class nvidia_knobs(base_knobs):
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
 
-class amd_knobs(base_knobs):
-    use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
-    # Note: This requires use_buffer_ops be true to have any effect
-    use_buffer_atomics: env_bool = env_bool("AMDGCN_USE_BUFFER_ATOMICS", True)
-    # Note: This requires use_buffer_ops be true to have any effect
-    buffer_ops_analyze_small_tensor_range: env_bool = env_bool("AMDGCN_ANALYZE_SMALL_TENSOR_RANGE", False)
-    dump_amdgcn: env_bool = env_bool("AMDGCN_ENABLE_DUMP")
-    libhip_path: env_opt_str = env_opt_str("TRITON_LIBHIP_PATH")
-
-    # We use strs so that we can have a default value based on other runtime info
-    use_block_pingpong: env_opt_bool = env_opt_bool("TRITON_HIP_USE_BLOCK_PINGPONG")
-    use_in_thread_transpose: env_opt_bool = env_opt_bool("TRITON_HIP_USE_IN_THREAD_TRANSPOSE")
-    use_async_copy: env_opt_bool = env_opt_bool("TRITON_HIP_USE_ASYNC_COPY")
-    use_expert_scheduling: env_opt_bool = env_opt_bool("TRITON_HIP_USE_EXPERT_SCHEDULING")
-
-    scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
-
-    # Path to dump MIR files for debugging/analysis
-    dump_mir: env_opt_str = env_opt_str("TRITON_DUMP_MIR")
-    # Path to externally-provided MIR files to use instead of generated ones
-    swap_mir: env_opt_str = env_opt_str("TRITON_SWAP_MIR")
-    # Enable machine instruction scheduler in MIR swap mode
-    swap_mir_enable_misched: env_bool = env_bool("TRITON_SWAP_MIR_ENABLE_MISCHED", False)
-
-
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
     cupti_lib_dir: env_str = env_str(
@@ -579,7 +554,6 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
-amd = amd_knobs()
 proton = proton_knobs()
 
 

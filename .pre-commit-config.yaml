@@ -21,7 +21,7 @@ repos:
     rev: v0.9.1
     hooks:
       - id: ruff
-        files: '(^python|^third_party/proton|^third_party/amd|^third_party/nvidia|^test)/.*'
+        files: '(^python|^third_party/proton|^third_party/nvidia|^test)/.*'
         args: ["--fix", "--exit-non-zero-on-fix"]
         exclude: |
           (?x)(
@@ -67,11 +67,6 @@ repos:
 exclude: |
   (?x)(
     ^include/triton/external/|
-    ^third_party/amd/backend/include/hip/|
-    ^third_party/amd/backend/include/hipblas-common/|
-    ^third_party/amd/backend/include/hsa/|
-    ^third_party/amd/backend/include/roctracer/|
-    ^third_party/amd/backend/lib/|
     ^third_party/nvidia/backend/include/cuda.h|
     ^third_party/f2reduce
   )

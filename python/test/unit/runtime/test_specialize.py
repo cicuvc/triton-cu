@@ -6,7 +6,6 @@ from triton._C.libtriton import native_specialize_impl
 from triton.runtime.jit import MockTensor, JITCallable
 from triton._utils import canonicalize_dtype
 from triton.backends.nvidia.compiler import CUDABackend
-from triton.backends.amd.compiler import HIPBackend
 from triton.language import constexpr
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor as GluonTensorDescriptor
@@ -166,7 +165,7 @@ def mock_tensors_to_specialize():
     gluon_tensordescriptors_to_specialize,
     mock_tensors_to_specialize,
 ])
-@pytest.mark.parametrize("backend", [CUDABackend, HIPBackend])
+@pytest.mark.parametrize("backend", [CUDABackend])
 @pytest.mark.parametrize("is_const", [True, False])
 @pytest.mark.parametrize("specialize_value", [True, False])
 @pytest.mark.parametrize("align", [True, False])

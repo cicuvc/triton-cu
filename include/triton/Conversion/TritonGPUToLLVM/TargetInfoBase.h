@@ -110,9 +110,7 @@ public:
   virtual bool supportBitwidth32Elementwise() const { return false; }
 
   // Returns the preferred arity of the in-thread reduction tree for the given
-  // combiner operation. The default is 2 (binary tree). Targets that have
-  // native ternary instructions (e.g. AMD v_maximum3/v_minimum3) can return 3
-  // to generate a ternary reduction tree that maps directly to hardware.
+  // combiner operation. The default is 2 (binary tree).
   virtual unsigned getReductionTreeArity(Operation *combinerOp) const {
     return 2;
   }

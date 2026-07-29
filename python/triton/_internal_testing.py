@@ -59,64 +59,46 @@ def is_hopper_or_newer():
     return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
 
+# Stub: AMD functions always return False in this NVIDIA-only fork.
+def is_hip():
+    return False
+
+def is_hip_cdna2():
+    return False
+
+def is_hip_cdna3():
+    return False
+
+def is_hip_cdna4():
+    return False
+
+def is_hip_rdna3():
+    return False
+
+def is_hip_rdna4():
+    return False
+
+def is_hip_gfx1250():
+    return False
+
+def is_hip_cdna3_or_newer():
+    return False
+
+def is_hip_cdna():
+    return False
+
+def is_hip_rdna():
+    return False
+
+def get_hip_lds_size():
+    return 0
+
 def is_hopper():
     return is_cuda() and torch.cuda.get_device_capability()[0] == 9
 
 
 def is_sm12x():
     return is_cuda() and torch.cuda.get_device_capability()[0] == 12
-
-
-def is_hip():
-    target = get_current_target()
-    return False if target is None else target.backend == "hip"
-
-
-def is_hip_cdna2():
-    target = get_current_target()
-    return target is not None and target.backend == 'hip' and target.arch == 'gfx90a'
-
-
-def is_hip_cdna3():
-    target = get_current_target()
-    return target is not None and target.backend == 'hip' and target.arch == 'gfx942'
-
-
-def is_hip_cdna4():
-    target = get_current_target()
-    return target is not None and target.backend == 'hip' and target.arch == 'gfx950'
-
-
-def is_hip_rdna3():
-    target = get_current_target()
-    return target is not None and target.backend == 'hip' and 'gfx11' in target.arch
-
-
-def is_hip_rdna4():
-    target = get_current_target()
-    # check for gfx120 instead of gfx12, to avoid matching gfx1250
-    return target is not None and target.backend == 'hip' and 'gfx120' in target.arch
-
-
-def is_hip_gfx1250():
-    target = get_current_target()
-    return target is not None and target.backend == 'hip' and 'gfx1250' in target.arch
-
-
-def is_hip_cdna3_or_newer():
-    return is_hip_cdna3() or is_hip_cdna4()
-
-
-def is_hip_cdna():
-    return is_hip_cdna2() or is_hip_cdna3() or is_hip_cdna4()
-
-
-def is_hip_rdna():
-    return is_hip_rdna3() or is_hip_rdna4()
-
-
-def get_hip_lds_size():
-    return 163840 if is_hip_cdna4() else 65536
 
 
 def is_xpu():

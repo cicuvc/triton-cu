@@ -94,26 +94,6 @@ protected:
         /*fp4Padded=*/false, cta);
   }
 
-  mlir::triton::gpu::AMDMfmaEncodingAttr
-  mfma(unsigned version, ArrayRef<unsigned> warpsPerCTA,
-       ArrayRef<unsigned> instrShape, bool isTransposed,
-       ArrayRef<unsigned> tilesPerWarp = {}, unsigned bitWidth = 0) {
-    auto cta = mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(
-        &ctx, warpsPerCTA.size());
-    return mlir::triton::gpu::AMDMfmaEncodingAttr::get(
-        &ctx, version, warpsPerCTA, instrShape, isTransposed, cta, tilesPerWarp,
-        bitWidth);
-  }
-
-  mlir::triton::gpu::AMDRotatingSharedEncodingAttr
-  AMDRotatingShared(unsigned vec, unsigned perPhase, unsigned maxPhase,
-                    ArrayRef<unsigned> order) {
-    auto cta =
-        mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(&ctx, order.size());
-    return mlir::triton::gpu::AMDRotatingSharedEncodingAttr::get(
-        &ctx, vec, perPhase, maxPhase, order, cta);
-  }
-
   LinearLayout toLL(ArrayRef<int64_t> shape, Attribute attr) {
     return mlir::triton::gpu::toLinearLayout(shape, attr);
   }
@@ -574,92 +554,6 @@ TEST_F(BankConflictTest, bankConflicts) {
 
         << toLL(c.shape, c.reg).invertAndCompose(toLL(c.shape, c.shared))
         << "\nbitwidth=" << c.bitwidth << "\n"
-        << attrStr(c.reg) << "\n"
-        << attrStr(c.shared);
-  }
-}
-
-TEST_F(BankConflictTest, bankConflictsWavefront64) {
-  using mlir::triton::gpu::DotOperandEncodingAttr;
-
-  auto mmaV3 = mfma(3, {4, 1}, {32, 32, 8}, true);
-  auto mmaV4 = mfma(4, {4, 1}, {32, 32, 16}, true);
-
-  auto dotAV3 =
-      DotOperandEncodingAttr::get(&ctx, /*opIdx=*/0, mmaV3, /*kWidth=*/4);
-  auto dotAV4 =
-      DotOperandEncodingAttr::get(&ctx, /*opIdx=*/0, mmaV4, /*kWidth=*/8);
-  auto dotBV3 =
-      DotOperandEncodingAttr::get(&ctx, /*opIdx=*/1, mmaV3, /*kWidth=*/4);
-  auto dotBV4 =
-      DotOperandEncodingAttr::get(&ctx, /*opIdx=*/1, mmaV4, /*kWidth=*/4);
-
-  struct Case {
-    Attribute reg;
-    Attribute shared;
-    SmallVector<int64_t, 3> shape;
-    int bitwidth;
-    int numBanks;
-    LocalMemOpTile laneTile;
-  };
-
-  SmallVector<Case, 6> cases = {
-      {blocked({1, 8}, {4, 16}, {4, 1}, {1, 0}),
-       mlir::triton::gpu::SwizzledSharedEncodingAttr::get(
-           &ctx, 8, 1, 16, {1, 0},
-           mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(&ctx, 2)),
-       {128, 128},
-       16,
-       32,
-       /*vec=4*/ {{}, {0, 1, 4}}},
-      {blocked({1, 8}, {4, 16}, {4, 1}, {1, 0}),
-       mlir::triton::gpu::SwizzledSharedEncodingAttr::get(
-           &ctx, 8, 1, 16, {1, 0},
-           mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(&ctx, 2)),
-       {128, 128},
-       16,
-       64,
-       /*vec=4*/ {{}, {0, 1, 3, 4}}},
-      {dotAV3,
-       mlir::triton::gpu::SwizzledSharedEncodingAttr::get(
-           &ctx, 4, 1, 16, {1, 0},
-           mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(&ctx, 2)),
-       {128, 128},
-       16,
-       32,
-       /*vec=2*/ {{}, {}}},
-      {dotAV4,
-       mlir::triton::gpu::SwizzledSharedEncodingAttr::get(
-           &ctx, 8, 1, 16, {1, 0},
-           mlir::triton::gpu::CGAEncodingAttr::get1CTALayout(&ctx, 2)),
-       {128, 128},
-       16,
-       64,
-       /*vec=4*/ {{}, {0, 1, 3, 4}}},
-      {dotBV3,
-       AMDRotatingShared(/*vec=*/4, /*perPhase=*/1, /*maxPhase=*/16,
-                         /*order=*/{0, 1}),
-       {64, 128},
-       16,
-       32,
-       /*vec=2*/ {{}, {}}},
-      {dotBV4,
-       AMDRotatingShared(/*vec=*/4, /*perPhase=*/2, /*maxPhase=*/8,
-                         /*order=*/{0, 1}),
-       {64, 128},
-       16,
-       64,
-       /*vec=2*/ {{}, {}}},
-  };
-
-  for (const auto &c : cases) {
-    EXPECT_EQ(computeConflicts(c.shape, c.reg, c.shared, c.bitwidth, c.numBanks,
-                               c.laneTile),
-              bruteforceBankConflictsPerWavefront64(
-                  c.shape, c.reg, c.shared, c.bitwidth, c.numBanks, c.laneTile))
-        << toLL(c.shape, c.reg).invertAndCompose(toLL(c.shape, c.shared))
-        << "\nbitwidth=" << c.bitwidth << "\n"
-        << "numBanks=" << c.numBanks << "\n"
         << attrStr(c.reg) << "\n"
         << attrStr(c.shared);
   }

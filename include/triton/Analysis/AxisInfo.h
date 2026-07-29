@@ -291,9 +291,7 @@ public:
   unsigned getAlignment(Value value);
 
   // Overloads of the above methods but have separated elementBitWidth to
-  // calculate the contiguity. These are useful for computing axis info when
-  // lowering to hardware intrinsics that require a scalar/warp-uniform base ptr
-  // with separate per lane offsets like AMD buffer operations.
+  // calculate the contiguity.
   //
   // As a concrete example, instead of a single tensor<128x64x!tt.ptr<f16>>
   // value, now we have two separate values: !tt.ptr<f16> for the base pointer

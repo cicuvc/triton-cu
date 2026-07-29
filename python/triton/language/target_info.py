@@ -23,6 +23,23 @@ def is_cuda():
 
 
 @constexpr_function
+@constexpr_function
+def is_hip():
+    return False
+
+@constexpr_function
+def is_hip_cdna3():
+    return False
+
+@constexpr_function
+def is_hip_cdna4():
+    return False
+
+@constexpr_function
+def is_hip_gfx1250():
+    return False
+
+@constexpr_function
 def cuda_capability_geq(major, minor=0):
     """
     Determines whether we have compute capability >= (major, minor) and
@@ -36,25 +53,4 @@ def cuda_capability_geq(major, minor=0):
     return target.arch >= major * 10 + minor
 
 
-@constexpr_function
-def is_hip():
-    target = current_target()
-    return target is not None and target.backend == "hip"
 
-
-@constexpr_function
-def is_hip_cdna3():
-    target = current_target()
-    return target is not None and target.arch == "gfx942"
-
-
-@constexpr_function
-def is_hip_cdna4():
-    target = current_target()
-    return target is not None and target.arch == "gfx950"
-
-
-@constexpr_function
-def is_hip_gfx1250():
-    target = current_target()
-    return target is not None and target.arch == "gfx1250"

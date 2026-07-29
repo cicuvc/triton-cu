@@ -10,23 +10,11 @@ import numpy as np
 
 import triton
 from triton.backends.compiler import GPUTarget
-from triton._internal_testing import is_cuda, is_hip
+from triton._internal_testing import is_cuda
+from triton.backends.nvidia.driver import include_dirs, library_dirs
 
-if is_cuda():
-    from triton.backends.nvidia.driver import include_dirs, library_dirs
-
-    def library_names():
-        return ["cuda"]
-
-elif is_hip():
-    from triton.backends.amd.driver import include_dirs, _get_path_to_hip_runtime_dylib
-
-    def library_dirs():
-        hip_runtime_dylib = _get_path_to_hip_runtime_dylib()
-        return [os.path.dirname(hip_runtime_dylib)]
-
-    def library_names():
-        return ["amdhip64"]
+def library_names():
+    return ["cuda"]
 
 
 kernel_utils_src = """
@@ -102,17 +90,11 @@ def kernel(
 """
 
 
-if is_cuda():
-    test_utils_src = """
+test_utils_src = """
 #include <cuda.h>
 
 // Forward declaration for backward compatibility with CUDA 12.x and 13.x
 CUresult cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev);
-"""
-elif is_hip():
-    test_utils_src = """
-#define __HIP_PLATFORM_AMD__
-#include <hip/hip_runtime.h>
 """
 
 test_utils_src += """
@@ -167,8 +149,7 @@ def gen_kernel_library(dir, libname):
 
 
 def gen_test_bin(dir, M, N, K, exe="test", algo_id=0):
-    if is_cuda():
-        test_src = f"""
+    test_src = f"""
 int main(int argc, char **argv) {{
   int M = {M}, N = {N}, K = {K};
 
@@ -220,61 +201,6 @@ int main(int argc, char **argv) {{
   cuMemFree(B);
   cuMemFree(C);
   cuCtxDestroy(ctx);
-}}
-"""
-    elif is_hip():
-        test_src = f"""
-int main(int argc, char **argv) {{
-  int M = {M}, N = {N}, K = {K};
-
-  // initialize hip handles
-  hipDevice_t dev;
-  // hipCtx_t ctx;
-  hipStream_t stream;
-  hipDeviceptr_t A, B, C;
-  hipError_t err = 0;
-  hipInit(0);
-  hipDeviceGet(&dev, 0);
-  // hipCtxCreate(&ctx, 0, dev);
-  hipMalloc(&A, M * K * 2);
-  hipMalloc(&B, K * N * 2);
-  hipMalloc(&C, M * N * 4);
-  hipStreamCreateWithFlags(&stream, 0);
-  load_matmul_fp16();
-
-  // initialize input data
-  int16_t hA[M*K];
-  int16_t hB[K*N];
-  memset(hA, 0, M*K*2);
-  memset(hB, 0, K*N*2);
-  read_csv_to_buffer(argv[1], hA, M*K);
-  read_csv_to_buffer(argv[2], hB, K*N);
-  hipMemcpyHtoD(A, hA, M*K*2);
-  hipMemcpyHtoD(B, hB, K*N*2);
-
-  // launch kernel
-  hipError_t ret;
-  int algo_id = {algo_id};
-  if (algo_id == 0) {{
-    ret = matmul_fp16_default(stream, C, A, B, M, N, K, N, 1, K, 1, N, 1);
-  }} else {{
-    ret = matmul_fp16(stream, C, A, B, M, N, K, N, 1, K, 1, N, 1, {algo_id});
-  }}
-  if (ret != 0) fprintf(stderr, "kernel launch failed\\n");
-  assert(ret == 0);
-
-  // read data
-  int32_t hC[M*N];
-  memset(hC, 0, M*N*4);
-  hipMemcpyDtoH(hC, C, M*N*4);
-  write_buffer_to_csv(argv[3], hC, M*N);
-
-  // free hip handles
-  unload_matmul_fp16();
-  hipFree(A);
-  hipFree(B);
-  hipFree(C);
-  // hipCtxDestroy(ctx);
 }}
 """
     src = test_utils_src + test_src
@@ -398,8 +324,6 @@ def test_compile_link_matmul_no_specialization():
 
         kernel_path = write_triton_kernels(tmp_dir, kernel_src, kernel_utils_src)
         compile_aot_kernel_no_specialization(tmp_dir, kernel_path, dtype, BM, BN, BK)
-        if is_hip():
-            check_hasco_binary_str(tmp_dir, dtype)
 
         link_aot_kernels(tmp_dir)
 
@@ -432,8 +356,6 @@ def test_compile_link_matmul():
 
         kernel_path = write_triton_kernels(tmp_dir, kernel_src, kernel_utils_src)
         compile_aot_kernels(tmp_dir, kernel_path, dtype, BM, BN, BK, ha_hb_hints=[(":16", ":16")])
-        if is_hip():
-            check_hasco_binary_str(tmp_dir, dtype)
         link_aot_kernels(tmp_dir)
 
         # compile test case
@@ -465,8 +387,6 @@ def test_launcher_has_no_available_kernel():
 
         kernel_path = write_triton_kernels(tmp_dir, kernel_src, kernel_utils_src)
         compile_aot_kernels(tmp_dir, kernel_path, dtype, BM, BN, BK, ha_hb_hints=[(":1", ":1")])
-        if is_hip():
-            check_hasco_binary_str(tmp_dir, dtype)
 
         link_aot_kernels(tmp_dir)
 
@@ -550,24 +470,17 @@ module attributes {{"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = {warp_si
   }}
 }}
 """
-    target = GPUTarget("hip", "gfx942", 64) if is_hip() else GPUTarget("cuda", 80, 32)
+    target = GPUTarget("cuda", 80, 32)
     with tempfile.TemporaryDirectory() as tmp_dir:
         kernel_path = os.path.join(tmp_dir, "empty_kernel.ttgir")
         with open(kernel_path, "w") as fp:
             fp.write(src.format(warp_size=target.warp_size))
         k = triton.compile(kernel_path, target=target)
-        if is_cuda():
-            ptx = k.asm["ptx"]
-            assert ".target sm_80" in ptx
-            assert ".address_size 64" in ptx
-        elif is_hip():
-            amdgcn = k.asm["amdgcn"]
-            assert '.amdgcn_target "amdgcn-amd-amdhsa--gfx942"' in amdgcn
-            assert '.wavefront_size: 64' in amdgcn
+        ptx = k.asm["ptx"]
+        assert ".target sm_80" in ptx
+        assert ".address_size 64" in ptx
 
 
-@pytest.mark.parametrize("target", [GPUTarget("hip", "gfx942", 64), GPUTarget("hip", "gfx1250", 32)])
-@pytest.mark.skipif(not is_hip(), reason="Requires HIP")
 def test_gluon_kernel(target):
     with tempfile.TemporaryDirectory() as tmp_dir:
         dtype = "fp16"

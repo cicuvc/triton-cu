@@ -113,9 +113,7 @@ public:
 private:
   const TargetInfoBase &targetInfo;
 
-  // Reduce values using a tree of the given arity. Arity=3 generates
-  // combine(combine(a, b), c) groups that LLVM folds into ternary
-  // instructions (e.g. v_maximum3_f32 on AMD).
+  // Reduce values using a tree of the given arity.
   SmallVector<Value> treeReduce(Location loc,
                                 ConversionPatternRewriter &rewriter,
                                 Region &combineOp,

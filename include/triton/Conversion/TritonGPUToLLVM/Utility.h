@@ -566,8 +566,6 @@ std::pair<Value, Value> getLaneAndWarpId(OpBuilder &rewriter, Location loc);
 // -----------------------------------------------------------------------
 using LLVM::SharedMemoryObject;
 using ::mlir::LLVM::delinearize;
-using ::mlir::triton::gpu::AMDMfmaEncodingAttr;
-using ::mlir::triton::gpu::AMDWmmaEncodingAttr;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;

@@ -135,11 +135,6 @@ getAtomicWriteElementsPerThreadCap(Operation *op) {
 
   auto moduleOp = op->getParentOfType<ModuleOp>();
 
-  if (moduleOp && getAMDArch(moduleOp)) {
-    unsigned elemBitwidth = elemTy.getIntOrFloatBitWidth();
-    return std::max(1u, 32u / elemBitwidth);
-  }
-
   if (atomicRmw.getAtomicRmwOp() != RMWOp::FADD)
     return std::nullopt;
 
@@ -1085,22 +1080,7 @@ int getNVIDIAComputeCapability(Operation *module) {
       .getComputeCapability();
 }
 
-std::optional<StringRef> getAMDArch(Operation *module) {
-  StringAttr targetAttr =
-      module->getAttrOfType<StringAttr>(triton::gpu::AttrTargetName);
-  if (!targetAttr) {
-    LDBG("Expected a target attribute on the module operation");
-    return {};
-  }
 
-  StringRef ref = targetAttr.strref();
-  if (!ref.starts_with("hip:")) {
-    LDBG("expected target attribute to be prefixed with \"hip:\"");
-    return {};
-  }
-
-  return ref.drop_front(4); // drop the "hip:"
-}
 
 static inline ttg::SwizzledSharedEncodingAttr
 swizzleDotOperandLike(RankedTensorType type, ttg::CGAEncodingAttr cgaLayout) {

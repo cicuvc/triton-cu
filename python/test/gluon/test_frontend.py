@@ -10,15 +10,26 @@ from triton.experimental.gluon.language.nvidia import hopper
 from triton.experimental.gluon.language.nvidia.hopper import cluster
 from triton.experimental.gluon.language.nvidia.blackwell import mbarrier, tma, TensorMemoryLayout, TensorMemoryScalesLayout, async_copy
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
-from triton.experimental.gluon.language.amd import _layouts as amd_layouts
-from triton.experimental.gluon.language.amd.cdna4 import async_copy as cdna4_async_copy
-from triton.experimental.gluon.language.amd.gfx1250 import async_copy as gfx1250_async_copy
-from triton.experimental.gluon.language.amd.gfx1250 import mbarrier as gfx1250_mbarrier
-from triton.experimental.gluon.language.amd.gfx1250 import cluster as gfx1250_cluster
-from triton.experimental.gluon.language.amd.gfx1250 import (
-    PartitionedSharedLayout,
-    make_partitioned_dot_layouts,
-)
+try:
+    from triton.experimental.gluon.language.amd import _layouts as amd_layouts
+    from triton.experimental.gluon.language.amd.cdna4 import async_copy as cdna4_async_copy
+    from triton.experimental.gluon.language.amd.gfx1250 import async_copy as gfx1250_async_copy
+    from triton.experimental.gluon.language.amd.gfx1250 import mbarrier as gfx1250_mbarrier
+    from triton.experimental.gluon.language.amd.gfx1250 import cluster as gfx1250_cluster
+    from triton.experimental.gluon.language.amd.gfx1250 import (
+        PartitionedSharedLayout,
+        make_partitioned_dot_layouts,
+    )
+    _has_amd = True
+except ImportError:
+    amd_layouts = None
+    cdna4_async_copy = None
+    gfx1250_async_copy = None
+    gfx1250_mbarrier = None
+    gfx1250_cluster = None
+    PartitionedSharedLayout = None
+    make_partitioned_dot_layouts = None
+    _has_amd = False
 from triton.experimental.gluon.language.extra import libdevice
 
 from triton._filecheck import filecheck_test, run_parser
@@ -2061,6 +2072,7 @@ def amd_mfma_layout_kernel():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mfma_layout(target):
 
     module = run_parser(amd_mfma_layout_kernel, target=target)
@@ -2102,6 +2114,7 @@ def infer_layout_for_amd_mfma_kernel():
     ttgl.static_assert(b.type.layout == ttgl.SliceLayout(1, layout))
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4])
 def test_infer_layout_for_amd_mfma(target):
     module = run_parser(infer_layout_for_amd_mfma_kernel, target=target)
@@ -2144,6 +2157,7 @@ def amd_wmma_layout_kernel():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_RDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_wmma_layout(target):
     module = run_parser(amd_wmma_layout_kernel, target=target)
     expecttest.assert_expected_inline(
@@ -2176,6 +2190,7 @@ def infer_layout_for_amd_wmma_kernel():
     ttgl.static_assert(b.type.layout == ttgl.SliceLayout(1, layout))
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 @pytest.mark.parametrize("target", [HIP_TARGET_RDNA4])
 def test_infer_layout_for_amd_wmma(target):
     module = run_parser(infer_layout_for_amd_wmma_kernel, target=target)
@@ -2204,10 +2219,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 """)
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 @pytest.mark.parametrize("num_warps", [4, 8])
 @pytest.mark.parametrize("block_m,block_n", [(64, 64), (64, 128), (128, 128)])
 @pytest.mark.parametrize("a_transposed", [False, True])
 @pytest.mark.parametrize("b_transposed", [False, True])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_make_partitioned_dot_layouts(num_warps, block_m, block_n, a_transposed, b_transposed):
     block_k = 32
     INSTR_M, INSTR_N, INSTR_K = 16, 16, 32
@@ -2280,6 +2297,7 @@ def amd_async_copy_global_to_shared(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_async_copy_global_to_shared(target):
     ptr = MockTensor(ttgl.float16)
     mod = run_parser(amd_async_copy_global_to_shared, *make_args(ptr), target=target)
@@ -2354,6 +2372,7 @@ def amd_async_copy_shared_to_global(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_async_copy_shared_to_global(target):
     ptr = MockTensor(ttgl.float16)
     mod = run_parser(amd_async_copy_shared_to_global, *make_args(ptr), target=target)
@@ -2400,6 +2419,7 @@ def amd_commit_group():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_commit_group(target):
     mod = run_parser(amd_wait_group, target=target)
     expecttest.assert_expected_inline(
@@ -2419,6 +2439,7 @@ def amd_wait_group():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_async_wait(target):
     mod = run_parser(amd_wait_group, target=target)
     expecttest.assert_expected_inline(
@@ -2433,6 +2454,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_load_shared_relaxed(target):
 
     @gluon.jit
@@ -2460,6 +2482,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_load_shared_relaxed_in_loop(target):
 
     @gluon.jit
@@ -2521,6 +2544,7 @@ def amd_global_load_to_shared(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_global_load_to_shared(target):
     ptr = MockTensor(ttgl.float16)
     mod = run_parser(amd_global_load_to_shared, *make_args(ptr), target=target)
@@ -2606,6 +2630,7 @@ def buffer_load_to_shared_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_buffer_load_to_shared(target):
     ptr = MockTensor(ttgl.float16)
     mod = run_parser(buffer_load_to_shared_kernel, *make_args(ptr), target=target)
@@ -2678,6 +2703,7 @@ def buffer_load_store_kernel(x, y):
     ttgl.amd.cdna4.buffer_store(stored_value=a, ptr=y, offsets=auto_layout_offsets, mask=auto_layout_mask)
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_buffer_load_store():
     x = MockTensor(ttgl.float32)
     y = MockTensor(ttgl.float32)
@@ -2736,6 +2762,7 @@ def buffer_load_store_with_broadcast_kernel(x, y):
     ttgl.amd.cdna3.buffer_store(stored_value=a, ptr=y, offsets=offsets, mask=mask, cache='.cs')
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_buffer_load_store_with_broadcast():
     x = MockTensor(ttgl.float16)
     y = MockTensor(ttgl.float16)
@@ -2779,6 +2806,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_RDNA3])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_rdna3_wmma(target):
 
     @gluon.jit
@@ -2815,6 +2843,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_RDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_rdna4_wmma(target):
 
     @gluon.jit
@@ -2851,6 +2880,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mfma(target):
 
     @gluon.jit
@@ -2897,6 +2927,7 @@ def slice_kernel():
     ttgl.static_assert(s.type.layout == layout)
 
 
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_slice():
     module = run_parser(slice_kernel, target=HIP_TARGET_CDNA3)
     expecttest.assert_expected_inline(
@@ -2914,6 +2945,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mfma_scaled(target):
 
     @gluon.jit
@@ -2958,6 +2990,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mfma_scaled_none(target):
 
     @gluon.jit
@@ -2994,6 +3027,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mfma_scaled_scalar(target):
 
     @gluon.jit
@@ -3030,6 +3064,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4], ids=["cdna3", "cdna4"])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_scaled_upcast_fp4_cdna(target):
     scaled_upcast = _get_amd_scaled_upcast(target)
 
@@ -3066,6 +3101,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4], ids=["cdna3", "cdna4"])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_scaled_upcast_fp8_cdna(target):
     scaled_upcast = _get_amd_scaled_upcast(target)
 
@@ -3109,6 +3145,7 @@ def _get_amd_scaled_upcast(target):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4, HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_scaled_upcast_requires_e8m0_scale(target):
     scaled_upcast = _get_amd_scaled_upcast(target)
 
@@ -3127,6 +3164,7 @@ def test_amd_scaled_upcast_requires_e8m0_scale(target):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4, HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_scaled_upcast_requires_fp16_or_bf16_result_type(target):
     scaled_upcast = _get_amd_scaled_upcast(target)
 
@@ -3145,6 +3183,7 @@ def test_amd_scaled_upcast_requires_fp16_or_bf16_result_type(target):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4, HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_scaled_upcast_fp8_requires_matching_layout(target):
     scaled_upcast = _get_amd_scaled_upcast(target)
     if target in (HIP_TARGET_CDNA3, HIP_TARGET_CDNA4):
@@ -3168,6 +3207,7 @@ def test_amd_scaled_upcast_fp8_requires_matching_layout(target):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_wmma_scaled(target):
 
     @gluon.jit
@@ -3217,6 +3257,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_wmma_scaled_none(target):
 
     @gluon.jit
@@ -3259,6 +3300,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_wmma_scaled_scalar(target):
 
     @gluon.jit
@@ -3317,6 +3359,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_wmma_scale_layout_for_multicta(target):
 
     @gluon.jit
@@ -3459,6 +3502,7 @@ def test_layout_zeros():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_buffer_atomic_rmw(target):
 
     @gluon.jit
@@ -3569,6 +3613,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA4])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_buffer_atomic_rmw_bf16(target):
 
     @gluon.jit
@@ -3618,6 +3663,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_CDNA3, HIP_TARGET_CDNA4, HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_warp_pipeline(target):
 
     @gluon.jit
@@ -3776,6 +3822,7 @@ def amd_tdm_load_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_load(target):
 
     ptr = MockTensor(ttgl.float16)
@@ -3816,6 +3863,7 @@ def amd_host_tdm_load_kernel(desc):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_host_tdm_load(target):
 
     ptr = MockTensor(ttgl.float16, shape=(32, 128))
@@ -3859,6 +3907,7 @@ def amd_tdm_store_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_store(target):
 
     ptr = MockTensor(ttgl.float16)
@@ -3909,6 +3958,7 @@ def amd_tdm_gather_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_gather(target):
 
     ptr = MockTensor(ttgl.float16)
@@ -3956,6 +4006,7 @@ def amd_tdm_scatter_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_scatter(target):
 
     ptr = MockTensor(ttgl.float16)
@@ -3997,6 +4048,7 @@ def amd_tdm_load_pred_kernel(ptr, n):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_load_pred(target):
 
     ptr = MockTensor(ttgl.float16)
@@ -4052,6 +4104,7 @@ def amd_mbarrier_kernel():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_mbarrier(target):
     mod = run_parser(amd_mbarrier_kernel, target=target)
     expecttest.assert_expected_inline(
@@ -4077,6 +4130,7 @@ def amd_async_copy_mbarrier_kernel(ptr):
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_async_copy_mbarrier(target):
     ptr = MockTensor(ttgl.float16)
     mod = run_parser(amd_async_copy_mbarrier_kernel, *make_args(ptr), target=target)
@@ -4115,6 +4169,7 @@ def amd_cluster_barrier_arrive_kernel():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_cluster_barrier_arrive(target):
     mod = run_parser(amd_cluster_barrier_arrive_kernel, *make_args(num_ctas=2), target=target)
     expecttest.assert_expected_inline(
@@ -4134,6 +4189,7 @@ def amd_cluster_barrier_wait_kernel():
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_cluster_barrier_wait(target):
     mod = run_parser(amd_cluster_barrier_wait_kernel, *make_args(num_ctas=2), target=target)
     expecttest.assert_expected_inline(
@@ -4148,6 +4204,7 @@ module attributes {"ttg.num-ctas" = 2 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 
 @pytest.mark.parametrize("target", [HIP_TARGET_GFX1250])
+@pytest.mark.skipif(not _has_amd, reason="AMD support not available")
 def test_amd_tdm_load_mbarrier(target):
 
     ptr = MockTensor(ttgl.float16)

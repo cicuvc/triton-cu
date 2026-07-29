@@ -28,7 +28,12 @@ from triton.experimental.gluon.language.nvidia.ampere import async_copy, mma_v2
 from triton.experimental.gluon.language.nvidia.hopper import tma, mbarrier, fence_async_shared
 from triton.experimental.gluon.language.nvidia import hopper
 from triton.experimental.gluon.language.nvidia.blackwell import tma as blackwell_tma
-from triton.experimental.gluon.language.amd.cdna4 import async_copy as cdna4_async_copy
+try:
+    from triton.experimental.gluon.language.amd.cdna4 import async_copy as cdna4_async_copy
+    _has_amd_cdna4 = True
+except ImportError:
+    cdna4_async_copy = None
+    _has_amd_cdna4 = False
 from triton.experimental.gluon.language.extra import libdevice
 from triton.experimental.gluon.language.nvidia.blackwell import (
     TensorMemoryLayout,
